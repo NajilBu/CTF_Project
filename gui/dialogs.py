@@ -438,6 +438,7 @@ class LockScreenDialog:
         key        = item["key"]
         collected  = item["collected"]
         discovered = item["discovered"]
+        is_at      = item.get("is_at", False)  # player is standing on this item
 
         # Fixed-size panel so all 3 are identical regardless of content
         panel = tk.Frame(parent, bg="#1a1a24", bd=2, relief="groove",
@@ -448,7 +449,7 @@ class LockScreenDialog:
         tk.Label(panel, text=f"KEYHOLE  #{idx}",
                  fg="#8c8c9a", bg="#1a1a24",
                  font=font.Font(family="Segoe UI", size=9, weight="bold")
-                 ).pack(pady=(14, 4))
+                 ).pack(pady=(10, 4))
 
         if collected:
             tk.Label(panel, text="\u2705", bg="#1a1a24",
@@ -458,33 +459,67 @@ class LockScreenDialog:
                      ).pack(pady=(4, 14))
             return
 
-        # Both discovered and undiscovered show an entry field.
-        # Icon and subtitle differ to hint the player.
-        if discovered:
-            tk.Label(panel, text="\U0001f513", bg="#1a1a24",
-                     font=font.Font(family="Segoe UI", size=28)).pack()
-            tk.Label(panel, text="Key discovered!",
-                     fg="#ffd24d", bg="#1a1a24",
-                     font=font.Font(family="Segoe UI", size=8)
-                     ).pack(pady=(2, 4))
-        else:
+        # Parse key for Caesar cipher clues
+        cipher_clue = ""
+        formula_clue = ""
+        if key and "|" in key:
+            parts = key.split("|", 2)
+            if len(parts) == 3:
+                orig_w, cipher_w, shift_str = parts
+                shift = int(shift_str)
+                sign = "-" if shift > 0 else "+"
+                cipher_clue = f"Cipher: {cipher_w}"
+                formula_clue = f"Formula: C {sign} {abs(shift)}"
+
+        if not discovered:
+            # Not yet found on the map
             tk.Label(panel, text="\U0001f512", bg="#1a1a24",
                      font=font.Font(family="Segoe UI", size=28)).pack()
             tk.Label(panel, text="Explore the map\nto find this key",
                      fg="#5f5f6e", bg="#1a1a24",
                      font=font.Font(family="Segoe UI", size=8), justify="center"
+                     ).pack(pady=(2, 14))
+            return
+
+        if not is_at:
+            # Discovered but player is not standing on it
+            tk.Label(panel, text="\U0001f4cd", bg="#1a1a24",
+                     font=font.Font(family="Segoe UI", size=24)).pack()
+            if cipher_clue:
+                tk.Label(panel, text=cipher_clue, fg="#ffd24d", bg="#1a1a24",
+                         font=font.Font(family="Segoe UI", size=9, weight="bold")).pack()
+                tk.Label(panel, text=formula_clue, fg="#00d2ff", bg="#1a1a24",
+                         font=font.Font(family="Segoe UI", size=8, weight="bold")).pack()
+            tk.Label(panel, text="Stand on item\nto unlock",
+                     fg="#ff9f1a", bg="#1a1a24",
+                     font=font.Font(family="Segoe UI", size=8), justify="center"
+                     ).pack(pady=(4, 14))
+            return
+
+        # Player is standing on a discovered item — show unlock entry
+        tk.Label(panel, text="\U0001f513", bg="#1a1a24",
+                 font=font.Font(family="Segoe UI", size=24)).pack()
+        if cipher_clue:
+            tk.Label(panel, text=cipher_clue, fg="#ffd24d", bg="#1a1a24",
+                     font=font.Font(family="Segoe UI", size=9, weight="bold")).pack()
+            tk.Label(panel, text=formula_clue, fg="#00d2ff", bg="#1a1a24",
+                     font=font.Font(family="Segoe UI", size=8, weight="bold")).pack()
+        else:
+            tk.Label(panel, text="You're here! Enter word:",
+                     fg="#ffd24d", bg="#1a1a24",
+                     font=font.Font(family="Segoe UI", size=8)
                      ).pack(pady=(2, 4))
 
         ef = tk.Frame(panel, bg="#0e0e16",
                       highlightthickness=1,
                       highlightbackground="#2d2d37",
                       highlightcolor="#ffd24d")
-        ef.pack(fill="x", padx=12, pady=(0, 4))
+        ef.pack(fill="x", padx=12, pady=(2, 4))
         entry = tk.Entry(ef, bg="#0e0e16", fg="#ffffff", bd=0,
-                         font=font.Font(family="Segoe UI", size=12, weight="bold"),
+                         font=font.Font(family="Segoe UI", size=10, weight="bold"),
                          insertbackground="#ffffff", justify="center",
                          validate="key",
-                         validatecommand=(ef.register(lambda s: s.isdigit() or s == ""), "%P"))
+                         validatecommand=(ef.register(lambda s: s.isalpha() or s == ""), "%P"))
         entry.pack(fill="x", padx=8, pady=4)
 
         res_lbl = tk.Label(panel, text="", bg="#1a1a24",
@@ -507,7 +542,7 @@ class LockScreenDialog:
                      ).pack(pady=(4, 14))
 
         def submit(p=pos, e=entry, rl=res_lbl, dlg=dialog):
-            val = e.get().strip()
+            val = e.get().strip().upper()
             if not val:
                 return
             result = self.on_submit(p, val)
@@ -526,5 +561,123 @@ class LockScreenDialog:
                         activebackground="#e6b800", activeforeground="#121214",
                         bd=0, padx=10, pady=4,
                         font=self.button_font, cursor="hand2")
-        btn.pack(pady=(0, 14))
+        btn.pack(pady=(2, 10))
         entry.bind("<Return>", lambda e: submit())
+
+
+class TeleportDialog:
+    def __init__(self, parent, button_font, players_info, my_id, on_select, colors, color_names):
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Teleport Powerup")
+        self.dialog.geometry("380x350")
+        self.dialog.configure(bg="#121214")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+
+        # Center dialog
+        self.dialog.update_idletasks()
+        width = 380
+        height = 350
+        main_x = parent.winfo_x()
+        main_y = parent.winfo_y()
+        main_width = parent.winfo_width()
+        main_height = parent.winfo_height()
+        x = main_x + (main_width // 2) - (width // 2)
+        y = main_y + (main_height // 2) - (height // 2)
+        self.dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+        lbl_title = tk.Label(
+            self.dialog,
+            text="CHOOSE PLAYER TO TELEPORT",
+            fg="#ffd24d",
+            bg="#121214",
+            font=font.Font(family="Segoe UI", size=13, weight="bold")
+        )
+        lbl_title.pack(pady=(20, 10))
+
+        lbl_desc = tk.Label(
+            self.dialog,
+            text="Target will be moved to a random undiscovered cell.",
+            fg="#8c8c9a",
+            bg="#121214",
+            font=font.Font(family="Segoe UI", size=9)
+        )
+        lbl_desc.pack(pady=(0, 15))
+
+        other_players = []
+        for pid, pinfo in players_info.items():
+            try:
+                p_id_int = int(pid)
+                my_id_int = int(my_id)
+            except ValueError:
+                p_id_int = pid
+                my_id_int = my_id
+                
+            if p_id_int != my_id_int:
+                other_players.append((p_id_int, pinfo))
+
+        if not other_players:
+            lbl_none = tk.Label(
+                self.dialog,
+                text="No other players in game!",
+                fg="#ff4d4d",
+                bg="#121214",
+                font=font.Font(family="Segoe UI", size=10, weight="bold")
+            )
+            lbl_none.pack(pady=40)
+            
+            btn_close = tk.Button(
+                self.dialog,
+                text="CANCEL",
+                bg="#2a2a36",
+                fg="#ffffff",
+                relief="flat",
+                font=button_font,
+                command=self.dialog.destroy,
+                bd=0,
+                width=15,
+                pady=6,
+                cursor="hand2"
+            )
+            btn_close.pack(pady=10)
+        else:
+            frame_buttons = tk.Frame(self.dialog, bg="#121214")
+            frame_buttons.pack(pady=5, fill="both", expand=True)
+
+            for pid, pinfo in other_players:
+                color_hex = pinfo.get("color", colors[(pid - 1) % len(colors)])
+                color_name = color_names[(pid - 1) % len(color_names)]
+                
+                btn = tk.Button(
+                    frame_buttons,
+                    text=f"PLAYER {pid} ({color_name})",
+                    bg=color_hex,
+                    fg="#121214" if color_hex != "#121214" else "#ffffff",
+                    activebackground=color_hex,
+                    activeforeground="#121214",
+                    font=font.Font(family="Segoe UI", size=10, weight="bold"),
+                    relief="flat",
+                    bd=0,
+                    height=2,
+                    cursor="hand2",
+                    command=lambda p=pid: [on_select(p), self.dialog.destroy()]
+                )
+                btn.pack(pady=5, padx=40, fill="x")
+
+            btn_cancel = tk.Button(
+                self.dialog,
+                text="CANCEL",
+                bg="#212128",
+                fg="#8c8c9a",
+                activebackground="#ff4d4d",
+                activeforeground="#ffffff",
+                relief="flat",
+                font=button_font,
+                bd=0,
+                width=15,
+                pady=6,
+                cursor="hand2",
+                command=self.dialog.destroy
+            )
+            btn_cancel.pack(pady=15)

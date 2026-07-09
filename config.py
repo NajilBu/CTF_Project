@@ -47,6 +47,9 @@ def play_sound(sound_type):
             elif sound_type == "collect":
                 winsound.Beep(1200, 80)
                 winsound.Beep(1500, 120)
+            elif sound_type == "item_found":
+                winsound.Beep(750, 100)
+                winsound.Beep(1000, 150)
         except Exception:
             pass
 

@@ -7,7 +7,25 @@ from config import (
     CANVAS_WIDTH, CANVAS_HEIGHT, COLORS, COLOR_NAMES, play_sound
 )
 from network import GridServer, GridClient
-from gui.dialogs import CustomIPDialog, CustomPlayerCountDialog, CustomLockDialog, LockScreenDialog
+from gui.dialogs import CustomIPDialog, CustomPlayerCountDialog, CustomLockDialog, LockScreenDialog, TeleportDialog
+
+# Powerup display metadata (mirrors POWERUPS list in server.py)
+def make_caesar_clue():
+    words = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "DECRYPT", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING"]
+    word = random.choice(words)
+    shift = random.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
+    cipher = []
+    for char in word:
+        shifted = (ord(char) - ord('A') + shift) % 26
+        cipher.append(chr(ord('A') + shifted))
+    cipher_word = "".join(cipher)
+    return f"{word}|{cipher_word}|{shift}"
+
+POWERUP_META = {
+    "speed":  {"label": "Speed Boost", "icon": "\u26a1", "color": "#ffd24d"},
+    "shield": {"label": "Shield",      "icon": "\U0001f6e1", "color": "#00d2ff"},
+    "reveal": {"label": "Reveal",      "icon": "\U0001f50d", "color": "#ff9f1a"},
+}
 
 class GridGameApp:
     def __init__(self, root):
@@ -861,9 +879,11 @@ class GridGameApp:
                 my_data = self.per_player_data[my_id]
                 remaining = my_data.get("items", set())
                 collected = my_data.get("collected", {})
-                for cell in my_data.get("visited", set()):
+                visited = my_data.get("visited", set())
+                undiscovered = {item for item in remaining if item not in visited}
+                for cell in visited:
                     if cell not in self.client_cell_arrows and cell not in collected:
-                        arrow = self.get_closest_item_arrow(cell[0], cell[1], remaining)
+                        arrow = self.get_closest_item_arrow(cell[0], cell[1], undiscovered)
                         self.client_cell_arrows[cell] = arrow
 
             if self.game_started:
@@ -892,6 +912,7 @@ class GridGameApp:
     def start_client_active_game_screen(self):
         self.in_active_game = True
         self.client_cell_arrows = {}   # frozen (r,c) -> arrow char
+        self.selected_powerup_slot = None
         self.clear_screen()
 
         # Build Client Game GUI
@@ -970,6 +991,35 @@ class GridGameApp:
         )
         self.btn_lock.pack(side="right", padx=10, pady=12)
 
+        # --- Powerup Bar (3 slots) ---
+        self.powerup_bar = tk.Frame(self.header, bg="#1a1a24")
+        self.powerup_bar.pack(side="right", padx=10, pady=5)
+
+        tk.Label(self.powerup_bar, text="POWERUPS:",
+                 fg="#5f5f6e", bg="#1a1a24",
+                 font=("Segoe UI", 9, "bold")
+                 ).pack(side="left", padx=(0, 4), pady=5)
+
+        self.powerup_slot_frames = []
+        self.powerup_slot_labels = []
+        for slot_i in range(3):
+            slot_key = str(slot_i + 1)
+            sf = tk.Frame(self.powerup_bar, bg="#1a1a24",
+                          bd=0, highlightthickness=2,
+                          highlightbackground="#2d2d37",
+                          width=115, height=34)
+            sf.pack(side="left", padx=4, pady=5)
+            sf.pack_propagate(False)
+            lbl = tk.Label(sf, text=f"[{slot_key}] EMPTY",
+                           fg="#3a3a4a", bg="#1a1a24",
+                           font=("Segoe UI", 8))
+            lbl.pack(expand=True)
+            # Click or key 1/2/3 to select
+            sf.bind("<Button-1>", lambda e, i=slot_i: self.select_powerup_slot(i))
+            lbl.bind("<Button-1>", lambda e, i=slot_i: self.select_powerup_slot(i))
+            self.powerup_slot_frames.append(sf)
+            self.powerup_slot_labels.append(lbl)
+
         self.canvas = tk.Canvas(
             self.current_frame,
             width=CANVAS_WIDTH,
@@ -981,12 +1031,19 @@ class GridGameApp:
 
         self.footer = tk.Label(
             self.current_frame,
-            text="Use Arrow keys or WASD to navigate. Coordinate Explorer active!",
+            text="Arrow keys / WASD to move  •  1 / 2 / 3 to select powerup  •  E to use",
             fg="#8c8c9a",
             bg="#121214",
             font=self.hint_font
         )
         self.footer.pack(side="bottom", pady=10)
+
+        # Key bindings for powerup slot selection
+        self.root.bind("<Key-1>", lambda e: self.select_powerup_slot(0))
+        self.root.bind("<Key-2>", lambda e: self.select_powerup_slot(1))
+        self.root.bind("<Key-3>", lambda e: self.select_powerup_slot(2))
+        self.root.bind("<Key-e>", lambda e: self.use_selected_powerup())
+        self.root.bind("<Key-E>", lambda e: self.use_selected_powerup())
 
         self.draw_grid()
         self.update_client_ui_stats()
@@ -1015,6 +1072,59 @@ class GridGameApp:
         if hasattr(self, 'btn_lock'):
             self.btn_lock.config(bg="#ffd24d", fg="#121214", text="\U0001f512 VAULT")
 
+        self.update_powerup_bar()
+
+    def select_powerup_slot(self, slot_index):
+        """Highlight the selected powerup slot (0-based). No-op if slot is empty."""
+        if not hasattr(self, 'powerup_slot_frames'):
+            return
+        # Get current slots for this player
+        slots = [None, None, None]
+        if self.my_player_id and self.my_player_id in self.per_player_data:
+            slots = self.per_player_data[self.my_player_id].get("powerups", [None, None, None])
+        elif self.my_player_id == "solo":
+            slots = getattr(self, 'solo_powerups', [None, None, None])
+
+        if slots[slot_index] is None:
+            return  # empty slot — nothing to select
+
+        self.selected_powerup_slot = slot_index
+        play_sound("click")
+        self.update_powerup_bar()
+
+    def update_powerup_bar(self):
+        """Refresh the 3 powerup slot boxes to reflect current inventory."""
+        if not hasattr(self, 'powerup_slot_frames'):
+            return
+
+        slots = [None, None, None]
+        if self.my_player_id == "solo":
+            slots = getattr(self, 'solo_powerups', [None, None, None])
+        elif self.my_player_id and self.my_player_id in self.per_player_data:
+            slots = self.per_player_data[self.my_player_id].get("powerups", [None, None, None])
+
+        selected = getattr(self, 'selected_powerup_slot', None)
+
+        for i, (sf, lbl) in enumerate(zip(self.powerup_slot_frames, self.powerup_slot_labels)):
+            pu_id = slots[i] if i < len(slots) else None
+            is_selected = (selected == i and pu_id is not None)
+
+            if pu_id:
+                meta = POWERUP_META.get(pu_id, {"label": pu_id, "icon": "?", "color": "#ffffff"})
+                lbl.config(
+                    text=f"[{i+1}] {meta['icon']} {meta['label']}",
+                    fg=meta["color"]
+                )
+                border_color = "#ffffff" if is_selected else meta["color"]
+                bg = "#2a2a3a" if is_selected else "#1a1a24"
+            else:
+                lbl.config(text=f"[{i+1}] EMPTY", fg="#3a3a4a")
+                border_color = "#2d2d37"
+                bg = "#1a1a24"
+
+            sf.config(highlightbackground=border_color, bg=bg)
+            lbl.config(bg=bg)
+
     def open_lock_dialog(self):
         """Open the 3-keyhole vault screen for multiplayer client."""
         if not self.is_client or not self.my_player_id:
@@ -1027,6 +1137,7 @@ class GridGameApp:
         item_keys = my_data.get("item_keys", {})      # (r,c) -> key str
 
         # Build full list of 3 item positions (remaining + collected)
+        player_pos = (self.players[my_id]["r"], self.players[my_id]["c"]) if my_id in self.players else None
         all_positions = sorted(list(items) + list(collected.keys()))
         items_data = []
         for i, pos in enumerate(all_positions[:3]):
@@ -1036,6 +1147,7 @@ class GridGameApp:
                 "key":        item_keys.get(pos),
                 "collected":  pos in collected,
                 "discovered": pos in visited,
+                "is_at":      pos == player_pos,
             })
 
         def on_submit(pos, entered_key):
@@ -1051,7 +1163,68 @@ class GridGameApp:
         if success:
             play_sound("collect")
 
-    # ------------------ OFFLINE SOLO GAME LOGIC ------------------
+    # ------------------ POWERUP ACTIVATION ------------------
+
+    def use_selected_powerup(self):
+        """Called when player presses E. Activates the selected powerup slot."""
+        if self.selected_powerup_slot is None:
+            return
+
+        slot = self.selected_powerup_slot
+
+        if self.my_player_id == "solo":
+            pu = (getattr(self, 'solo_powerups', [None, None, None]))[slot]
+            if not pu:
+                return
+
+            if pu == "reveal":
+                undiscovered = [item for item in self.hidden_items if item not in self.visited_cells]
+                if undiscovered:
+                    self.visited_cells.add(undiscovered[0])
+                    play_sound("qte_success")
+                    self.solo_powerups[slot] = None
+                    self.selected_powerup_slot = None
+                    self.update_powerup_bar()
+                    self.draw_elements()
+                else:
+                    play_sound("qte_wrong")
+
+            elif pu in ("shield", "speed"):
+                # Disabled in solo mode — only Reveal is available
+                play_sound("qte_wrong")
+
+
+        else:
+            # Multiplayer — delegate to server
+            my_id = self.my_player_id
+            if not my_id or my_id not in self.per_player_data:
+                return
+            slots_list = self.per_player_data[my_id].get("powerups", [None, None, None])
+            pu = slots_list[slot] if slot < len(slots_list) else None
+            if not pu:
+                return
+
+            if pu == "speed":
+                self.show_player_teleport_selection_dialog(slot)
+            else:
+                self.send_powerup_use(slot, None)
+
+    def show_player_teleport_selection_dialog(self, slot):
+        TeleportDialog(
+            self.root,
+            self.button_font,
+            self.players,
+            self.my_player_id,
+            lambda target_id: self.send_powerup_use(slot, target_id),
+            COLORS,
+            COLOR_NAMES
+        )
+
+    def send_powerup_use(self, slot, target_id=None):
+        if self.client:
+            self.client.send_powerup_use(slot, target_id)
+
+
 
     def start_solo_game(self):
         play_sound("click")
@@ -1064,7 +1237,10 @@ class GridGameApp:
         self.player_c = random.randint(0, GRID_COLS - 1)
         self.moves = 0
         self.solo_item_keys = {}
-        self.solo_cell_arrows = {}   # (r,c) -> frozen arrow char
+        self.solo_cell_arrows = {}       # (r,c) -> frozen arrow char
+        self.solo_powerups = [None, None, None]   # player's 3 slots
+        self.selected_powerup_slot = None
+        self.solo_map_powerups = self._spawn_solo_powerups()
 
         self.players = {"solo": {"r": self.player_r, "c": self.player_c, "color": "#00d2ff"}}
         self.visited_cells = {(self.player_r, self.player_c)}
@@ -1161,6 +1337,34 @@ class GridGameApp:
         )
         self.btn_lock.pack(side="right", padx=10, pady=12)
 
+        # --- Powerup Bar (solo) ---
+        self.powerup_bar = tk.Frame(self.header, bg="#1a1a24")
+        self.powerup_bar.pack(side="right", padx=10, pady=5)
+
+        tk.Label(self.powerup_bar, text="POWERUPS:",
+                 fg="#5f5f6e", bg="#1a1a24",
+                 font=("Segoe UI", 9, "bold")
+                 ).pack(side="left", padx=(0, 4), pady=5)
+
+        self.powerup_slot_frames = []
+        self.powerup_slot_labels = []
+        for slot_i in range(3):
+            slot_key = str(slot_i + 1)
+            sf = tk.Frame(self.powerup_bar, bg="#1a1a24",
+                          bd=0, highlightthickness=2,
+                          highlightbackground="#2d2d37",
+                          width=115, height=34)
+            sf.pack(side="left", padx=4, pady=5)
+            sf.pack_propagate(False)
+            lbl = tk.Label(sf, text=f"[{slot_key}] EMPTY",
+                           fg="#3a3a4a", bg="#1a1a24",
+                           font=("Segoe UI", 8))
+            lbl.pack(expand=True)
+            sf.bind("<Button-1>", lambda e, i=slot_i: self.select_powerup_slot(i))
+            lbl.bind("<Button-1>", lambda e, i=slot_i: self.select_powerup_slot(i))
+            self.powerup_slot_frames.append(sf)
+            self.powerup_slot_labels.append(lbl)
+
         self.canvas = tk.Canvas(
             self.current_frame,
             width=CANVAS_WIDTH,
@@ -1172,15 +1376,24 @@ class GridGameApp:
 
         self.footer = tk.Label(
             self.current_frame,
-            text="Use Arrow keys or WASD to navigate. Explore the grid!",
+            text="Arrow keys / WASD to move  •  1 / 2 / 3 to select powerup  •  E to use",
             fg="#8c8c9a",
             bg="#121214",
             font=self.hint_font
         )
         self.footer.pack(side="bottom", pady=10)
 
+        # Key bindings for powerup slot selection
+        self.root.bind("<Key-1>", lambda e: self.select_powerup_slot(0))
+        self.root.bind("<Key-2>", lambda e: self.select_powerup_slot(1))
+        self.root.bind("<Key-3>", lambda e: self.select_powerup_slot(2))
+        self.root.bind("<Key-e>", lambda e: self.use_selected_powerup())
+        self.root.bind("<Key-E>", lambda e: self.use_selected_powerup())
+
         self.draw_grid()
         self.draw_elements()
+        self.update_powerup_bar()
+        self.start_solo_spawner_timer()
 
     # ------------------ CANVAS DRAWING & CORE MOVEMENT ------------------
 
@@ -1275,6 +1488,8 @@ class GridGameApp:
                         flare_offset = 3
                         ring_w = 1
 
+                    undiscovered = {item for item in items if item not in visited}
+
                     for (r, c) in visited:
                         vx1 = c * split_size + 1
                         vy1 = r * split_size + 1
@@ -1303,7 +1518,7 @@ class GridGameApp:
                                 vx1, vy1, vx2, vy2,
                                 fill=p_color + "22", outline=p_color, width=1
                             )
-                            arrow_char = self.get_closest_item_arrow(r, c, items)
+                            arrow_char = self.get_closest_item_arrow(r, c, undiscovered)
                             if arrow_char:
                                 canvas.create_text(
                                     cx_cell, cy_cell,
@@ -1560,13 +1775,35 @@ class GridGameApp:
             self.moves += 1
             self.players["solo"]["r"] = new_r
             self.players["solo"]["c"] = new_c
-            self.visited_cells.add((new_r, new_c))
-            play_sound("move")
+
+            cell = (new_r, new_c)
+            # Detect if solo player finds their hidden item for the first time
+            item_found = False
+            if cell in self.hidden_items and cell not in self.visited_cells:
+                item_found = True
+
+            self.visited_cells.add(cell)
+
+            # Auto-collect powerup if solo player steps on one
+            map_powerups = getattr(self, 'solo_map_powerups', {})
+            if cell in map_powerups:
+                pu_id = map_powerups.pop(cell)
+                slots = getattr(self, 'solo_powerups', [None, None, None])
+                for i in range(3):
+                    if slots[i] is None:
+                        slots[i] = pu_id
+                        break
+                play_sound("collect")
+                self.update_powerup_bar()
+            elif item_found:
+                play_sound("item_found")
+            else:
+                play_sound("move")
 
             # Freeze arrow direction at moment of first visit
-            cell = (new_r, new_c)
             if cell not in self.solo_cell_arrows and cell not in self.collected_item_cells:
-                self.solo_cell_arrows[cell] = self.get_closest_item_arrow(new_r, new_c, self.hidden_items)
+                undiscovered = {item for item in self.hidden_items if item not in self.visited_cells}
+                self.solo_cell_arrows[cell] = self.get_closest_item_arrow(new_r, new_c, undiscovered)
 
             self.lbl_moves.config(text=f"MOVES: {self.moves}")
             self.lbl_pos.config(text=f"POSITION: ({self.player_c}, {self.player_r})")
@@ -1592,6 +1829,13 @@ class GridGameApp:
             self.spawn_solo_hidden_items()
             self.collected_item_cells = {}
 
+            # Reset solo powerups
+            self.solo_powerups = [None, None, None]
+            self.selected_powerup_slot = None
+            self.solo_map_powerups = self._spawn_solo_powerups()
+            self.update_powerup_bar()
+            self.start_solo_spawner_timer()
+
             self.lbl_moves.config(text="MOVES: 0")
             self.lbl_pos.config(text=f"POSITION: ({self.player_c}, {self.player_r})")
 
@@ -1612,7 +1856,7 @@ class GridGameApp:
             c = random.randint(0, GRID_COLS - 1)
             if (r, c) != (self.player_r, self.player_c):
                 self.hidden_items.add((r, c))
-                self.solo_item_keys[(r, c)] = str(random.randint(1000, 9999))
+                self.solo_item_keys[(r, c)] = make_caesar_clue()
 
     def open_lock_dialog_solo(self):
         """Open the 3-keyhole vault screen for solo mode."""
@@ -1622,6 +1866,7 @@ class GridGameApp:
         collected   = self.collected_item_cells   # (r,c) -> color
 
         # Build full sorted list of all 3 item positions
+        player_pos = (self.player_r, self.player_c)
         all_positions = sorted(list(remaining) + list(collected.keys()))
 
         items_data = []
@@ -1632,11 +1877,21 @@ class GridGameApp:
                 "key":        item_keys.get(pos),
                 "collected":  pos in collected,
                 "discovered": pos in visited,
+                "is_at":      pos == player_pos,
             })
 
         def on_submit(pos, entered_key):
-            correct = item_keys.get(pos)
-            if entered_key == correct:
+            # Enforce standing-on rule in solo too
+            if (self.player_r, self.player_c) != pos:
+                return False
+            stored_key = item_keys.get(pos)
+            correct_word = ""
+            if stored_key and "|" in stored_key:
+                correct_word = stored_key.split("|")[0]
+            else:
+                correct_word = str(stored_key)
+
+            if str(entered_key).strip().upper() == correct_word.upper():
                 self.hidden_items.discard(pos)
                 if pos in self.solo_item_keys:
                     del self.solo_item_keys[pos]
@@ -1654,6 +1909,51 @@ class GridGameApp:
         LockScreenDialog(self.root, self.button_font, items_data, on_submit).show()
 
 
+
+    def _spawn_solo_powerups(self):
+        """Place 2 Reveal powerups randomly on the grid for solo play."""
+        powerups_map = {}
+        all_occupied = {(self.player_r, self.player_c)} | getattr(self, 'hidden_items', set())
+
+        for _ in range(2):
+            attempts = 0
+            while attempts < 1000:
+                r = random.randint(0, GRID_ROWS - 1)
+                c = random.randint(0, GRID_COLS - 1)
+                if (r, c) not in all_occupied and (r, c) not in powerups_map:
+                    powerups_map[(r, c)] = "reveal"
+                    all_occupied.add((r, c))
+                    break
+        return powerups_map
+
+    def start_solo_spawner_timer(self):
+        # Cancel any existing timer if any
+        if hasattr(self, "_solo_spawner_after_id") and self._solo_spawner_after_id:
+            try:
+                self.root.after_cancel(self._solo_spawner_after_id)
+            except Exception:
+                pass
+        
+        def tick():
+            if not self.in_game or self.my_player_id != "solo":
+                return
+            
+            # Solo: spawn 1 Reveal powerup anywhere on the grid
+            map_powerups = getattr(self, 'solo_map_powerups', {})
+            attempts = 0
+            while attempts < 1000:
+                attempts += 1
+                r = random.randint(0, GRID_ROWS - 1)
+                c = random.randint(0, GRID_COLS - 1)
+                if (r, c) not in map_powerups:
+                    map_powerups[(r, c)] = "reveal"
+                    break
+            
+            self.draw_elements()
+            # Schedule next spawn in 60 seconds
+            self._solo_spawner_after_id = self.root.after(60000, tick)
+
+        self._solo_spawner_after_id = self.root.after(60000, tick)
 
     def get_closest_item_arrow(self, pr, pc, items=None):
         if items is None:
@@ -1713,15 +2013,39 @@ class GridGameApp:
                     )
                     if key:
                         self.canvas.create_text(
-                            cx_cell, cy_cell - 8,
+                            cx_cell, cy_cell - 14,
                             text="\U0001f513", fill="#ffd24d",
-                            font=("Segoe UI", 14), tags="visited_element"
+                            font=("Segoe UI", 12), tags="visited_element"
                         )
-                        self.canvas.create_text(
-                            cx_cell, cy_cell + 10,
-                            text=key, fill="#ffd24d",
-                            font=("Segoe UI", 9, "bold"), tags="visited_element"
-                        )
+                        if "|" in key:
+                            parts = key.split("|", 2)
+                            if len(parts) == 3:
+                                orig_w, cipher_w, shift_str = parts
+                                shift = int(shift_str)
+                                sign = "-" if shift > 0 else "+"
+                                formula = f"C{sign}{abs(shift)}"
+                                self.canvas.create_text(
+                                    cx_cell, cy_cell + 4,
+                                    text=cipher_w, fill="#ffd24d",
+                                    font=("Segoe UI", 8, "bold"), tags="visited_element"
+                                )
+                                self.canvas.create_text(
+                                    cx_cell, cy_cell + 16,
+                                    text=formula, fill="#00d2ff",
+                                    font=("Segoe UI", 7, "bold"), tags="visited_element"
+                                )
+                            else:
+                                self.canvas.create_text(
+                                    cx_cell, cy_cell + 10,
+                                    text=key, fill="#ffd24d",
+                                    font=("Segoe UI", 9, "bold"), tags="visited_element"
+                                )
+                        else:
+                            self.canvas.create_text(
+                                cx_cell, cy_cell + 10,
+                                text=key, fill="#ffd24d",
+                                font=("Segoe UI", 9, "bold"), tags="visited_element"
+                            )
                     else:
                         self.canvas.create_text(
                             cx_cell, cy_cell,

@@ -83,6 +83,12 @@ class GridClient:
                         self.players = {int(k): v for k, v in players_raw.items()}
                         self.game_started = msg.get("game_started", False)
 
+                        # Parse map-level powerup positions (hidden pickups remaining on map)
+                        self.map_powerups = {
+                            (entry["r"], entry["c"]): entry["id"]
+                            for entry in msg.get("map_powerups", [])
+                        }
+
                         # Parse per-player data
                         per_player_raw = msg.get("per_player", {})
                         self.per_player_data = {}
@@ -102,7 +108,8 @@ class GridClient:
                                 "item_keys": {
                                     tuple(int(x) for x in k.split(",")): v
                                     for k, v in data.get("item_keys", {}).items()
-                                }
+                                },
+                                "powerups": data.get("powerups", [None, None, None])
                             }
 
                         if self.on_state_update:
@@ -144,6 +151,17 @@ class GridClient:
         ready_msg = {"action": "ready", "ready": bool(ready)}
         try:
             self.client_socket.sendall((json.dumps(ready_msg) + "\n").encode())
+        except Exception:
+            pass
+
+    def send_powerup_use(self, slot, target_player_id=None):
+        if not self.client_running:
+            return
+        msg = {"action": "use_powerup", "slot": slot}
+        if target_player_id is not None:
+            msg["target_id"] = target_player_id
+        try:
+            self.client_socket.sendall((json.dumps(msg) + "\n").encode())
         except Exception:
             pass
 

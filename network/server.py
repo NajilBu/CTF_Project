@@ -2,7 +2,26 @@ import socket
 import json
 import random
 import threading
+import time
 from config import GRID_ROWS, GRID_COLS, COLORS, play_sound
+
+# Powerup definitions (placeholder — no active function yet)
+POWERUPS = [
+    {"id": "speed",  "label": "Speed Boost", "icon": "⚡"},
+    {"id": "shield", "label": "Shield",      "icon": "🛡"},
+    {"id": "reveal", "label": "Reveal",      "icon": "🔍"},
+]
+
+def make_caesar_clue():
+    words = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "DECRYPT", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING"]
+    word = random.choice(words)
+    shift = random.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
+    cipher = []
+    for char in word:
+        shifted = (ord(char) - ord('A') + shift) % 26
+        cipher.append(chr(ord('A') + shifted))
+    cipher_word = "".join(cipher)
+    return f"{word}|{cipher_word}|{shift}"
 
 class GridServer:
     def __init__(self, port=5555, max_players=4, on_lobby_update=None, on_game_update=None):
@@ -24,6 +43,10 @@ class GridServer:
         self.player_collected = {}  # p_id -> {(r, c): color}
         self.player_item_keys = {}  # p_id -> {(r, c): str numeric key}
 
+        # Global powerup state
+        self.powerups         = {}  # (r, c) -> powerup_id str  (remaining on map)
+        self.player_powerups  = {}  # p_id -> [slot0, slot1, slot2]  (None or powerup_id)
+
     # ------------------------------------------------------------------
     def _all_other_visited(self, p_id):
         """Return the union of all other players' visited cells."""
@@ -34,7 +57,7 @@ class GridServer:
         return result
 
     def spawn_player_items(self):
-        """Spawn 3 unique, globally-distinct items for every player, each with a random 4-digit key."""
+        """Spawn 3 unique, globally-distinct items for every player, each with a Caesar cipher word clue."""
         all_visited = set()
         for v in self.player_visited.values():
             all_visited |= v
@@ -51,9 +74,55 @@ class GridServer:
                 if (r, c) not in all_visited and (r, c) not in global_items:
                     self.player_items[p_id].add((r, c))
                     global_items.add((r, c))
-                    # Assign a unique 4-digit key to this item
-                    key = str(random.randint(1000, 9999))
+                    # Assign a Caesar cipher key clue to this item
+                    key = make_caesar_clue()
                     self.player_item_keys[p_id][(r, c)] = key
+
+    def spawn_powerups(self):
+        """Place 2 of each hidden powerup at random global positions (6 total)."""
+        all_occupied = set()
+        for v in self.player_visited.values():
+            all_occupied |= v
+        for items in self.player_items.values():
+            all_occupied |= items
+
+        self.powerups = {}
+        for pu in POWERUPS:
+            for _ in range(2):
+                attempts = 0
+                while attempts < 10000:
+                    attempts += 1
+                    r = random.randint(0, GRID_ROWS - 1)
+                    c = random.randint(0, GRID_COLS - 1)
+                    if (r, c) not in all_occupied and (r, c) not in self.powerups:
+                        self.powerups[(r, c)] = pu["id"]
+                        all_occupied.add((r, c))
+                        break
+
+    def start_periodic_spawner(self):
+        self.spawner_active = True
+        def spawner_loop():
+            while self.server_running and self.game_started and getattr(self, "spawner_active", False):
+                time.sleep(60)
+                if not (self.server_running and self.game_started and getattr(self, "spawner_active", False)):
+                    break
+                
+                # Spawn 1 of each powerup type anywhere on the grid
+                for pu in POWERUPS:
+                    attempts = 0
+                    while attempts < 1000:
+                        attempts += 1
+                        r = random.randint(0, GRID_ROWS - 1)
+                        c = random.randint(0, GRID_COLS - 1)
+                        if (r, c) not in self.powerups:
+                            self.powerups[(r, c)] = pu["id"]
+                            break
+                
+                if self.on_game_update:
+                    self.on_game_update()
+                self.broadcast_state()
+                
+        threading.Thread(target=spawner_loop, daemon=True).start()
 
     # ------------------------------------------------------------------
     def start(self):
@@ -104,6 +173,7 @@ class GridServer:
             self.player_visited[p_id]   = {(r, c)}
             self.player_items[p_id]     = set()
             self.player_collected[p_id] = {}
+            self.player_powerups[p_id]  = [None, None, None]
 
             init_msg = {"type": "init", "id": p_id,
                         "grid_rows": GRID_ROWS, "grid_cols": GRID_COLS,
@@ -145,6 +215,8 @@ class GridServer:
                             if self.on_lobby_update:
                                 self.on_lobby_update()
                             self.broadcast_state()
+                    elif msg.get("action") == "use_powerup":
+                        self.process_client_powerup(p_id, msg.get("slot", 0), msg.get("target_id"))
             except Exception:
                 break
 
@@ -174,17 +246,38 @@ class GridServer:
         if not (0 <= new_r < GRID_ROWS and 0 <= new_c < GRID_COLS):
             return
 
-        # Block moves into another player's territory
+        # Block moves onto another player's current position (body collision)
+        other_positions = {(p["r"], p["c"]) for pid, p in self.players.items() if pid != p_id}
+        if (new_r, new_c) in other_positions:
+            return
+
+        # Block moves into another player's visited trail territory
         if (new_r, new_c) in self._all_other_visited(p_id):
             return
+
+        # Detect if player finds their hidden item for the first time
+        item_found = False
+        if (new_r, new_c) in self.player_items.get(p_id, set()) and (new_r, new_c) not in self.player_visited[p_id]:
+            item_found = True
 
         self.players[p_id]["r"] = new_r
         self.players[p_id]["c"] = new_c
         self.players[p_id]["moves"] = self.players[p_id].get("moves", 0) + 1
         self.player_visited[p_id].add((new_r, new_c))
 
-        # Automatic item collection is disabled — player must use the lock/key system
-        play_sound("move")
+        # Auto-collect powerup if player steps on one
+        if (new_r, new_c) in self.powerups:
+            pu_id = self.powerups.pop((new_r, new_c))
+            slots = self.player_powerups.setdefault(p_id, [None, None, None])
+            for i in range(3):
+                if slots[i] is None:
+                    slots[i] = pu_id
+                    break
+            play_sound("collect")
+        elif item_found:
+            play_sound("item_found")
+        else:
+            play_sound("move")
 
         if self.on_game_update:
             self.on_game_update()
@@ -192,12 +285,20 @@ class GridServer:
 
     # ------------------------------------------------------------------
     def process_client_unlock(self, p_id, r, c, entered_key):
-        """Check if the entered key matches the specified item cell (no position requirement)."""
+        """Check if the entered key matches the specified item cell. Player must be standing on it."""
         if p_id not in self.players or not self.game_started:
             return
         if r is None or c is None:
             return
         pos = (int(r), int(c))
+
+        # Player must be standing on the item to unlock it
+        player_pos = (self.players[p_id]["r"], self.players[p_id]["c"])
+        if player_pos != pos:
+            play_sound("qte_wrong")
+            self._send_to(p_id, {"type": "unlock_result", "success": False})
+            return
+
         item_keys = self.player_item_keys.get(p_id, {})
         items = self.player_items.get(p_id, set())
 
@@ -214,6 +315,98 @@ class GridServer:
         else:
             play_sound("qte_wrong")
             self._send_to(p_id, {"type": "unlock_result", "success": False})
+
+    def process_client_powerup(self, p_id, slot, target_id=None):
+        if p_id not in self.players or not self.game_started:
+            return
+        slots = self.player_powerups.get(p_id, [None, None, None])
+        if slot < 0 or slot >= 3 or slots[slot] is None:
+            return
+
+        pu_type = slots[slot]
+
+        if pu_type == "reveal":
+            # Mark the player's nearest undiscovered item as visited (revealed)
+            my_items   = self.player_items.get(p_id, set())
+            my_visited = self.player_visited.get(p_id, set())
+            undiscovered = [item for item in my_items if item not in my_visited]
+            if undiscovered:
+                # Pick the first undiscovered item
+                next_item = undiscovered[0]
+                self.player_visited[p_id].add(next_item)
+                slots[slot] = None
+                play_sound("qte_success")
+                self.broadcast_state()
+            else:
+                play_sound("qte_wrong")
+
+        elif pu_type == "shield":
+            # Move every other player's item to an undiscovered cell if they're standing on it
+            affected = False
+            for other_id, other_p in list(self.players.items()):
+                if other_id == p_id:
+                    continue
+                other_pos = (other_p["r"], other_p["c"])
+                if other_pos in self.player_items.get(other_id, set()):
+                    # Relocate this item to a random cell not visited by other_id
+                    other_visited = self.player_visited.get(other_id, set())
+                    new_pos = None
+                    for _ in range(10000):
+                        r = random.randint(0, GRID_ROWS - 1)
+                        c = random.randint(0, GRID_COLS - 1)
+                        if (r, c) not in other_visited and (r, c) not in self.player_items.get(other_id, set()):
+                            new_pos = (r, c)
+                            break
+                    if new_pos:
+                        self.player_items[other_id].discard(other_pos)
+                        self.player_items[other_id].add(new_pos)
+                        # Reassign key to new position
+                        old_key = self.player_item_keys.get(other_id, {}).pop(other_pos, None)
+                        if old_key is None:
+                            old_key = make_caesar_clue()
+                        self.player_item_keys.setdefault(other_id, {})[new_pos] = old_key
+                        affected = True
+
+            if affected:
+                slots[slot] = None
+                play_sound("reset")
+                self.broadcast_state()
+            else:
+                play_sound("qte_wrong")
+
+        elif pu_type == "speed":
+            # Teleport target player to a random undiscovered cell
+            if target_id is None:
+                play_sound("qte_wrong")
+                return
+            try:
+                target_id = int(target_id)
+            except (ValueError, TypeError):
+                play_sound("qte_wrong")
+                return
+            if target_id not in self.players:
+                play_sound("qte_wrong")
+                return
+
+            target_visited = self.player_visited.get(target_id, set())
+            new_pos = None
+            for _ in range(10000):
+                r = random.randint(0, GRID_ROWS - 1)
+                c = random.randint(0, GRID_COLS - 1)
+                if (r, c) not in target_visited:
+                    new_pos = (r, c)
+                    break
+            if new_pos:
+                self.players[target_id]["r"] = new_pos[0]
+                self.players[target_id]["c"] = new_pos[1]
+                self.player_visited[target_id].add(new_pos)
+                slots[slot] = None
+                play_sound("reset")
+                if self.on_game_update:
+                    self.on_game_update()
+                self.broadcast_state()
+            else:
+                play_sound("qte_wrong")
 
     def _send_to(self, p_id, msg):
         conn = self.clients.get(p_id)
@@ -237,13 +430,18 @@ class GridServer:
                 "item_keys": {
                     f"{r},{c}": key
                     for (r, c), key in self.player_item_keys.get(p_id, {}).items()
-                }
+                },
+                "powerups": self.player_powerups.get(p_id, [None, None, None])
             }
         state_msg = {
             "type": "state",
             "players": {str(k): v for k, v in self.players.items()},
             "game_started": self.game_started,
-            "per_player": per_player
+            "per_player": per_player,
+            "map_powerups": [
+                {"r": r, "c": c, "id": pu_id}
+                for (r, c), pu_id in self.powerups.items()
+            ]
         }
         data_str = json.dumps(state_msg) + "\n"
         for conn in list(self.clients.values()):
@@ -256,7 +454,10 @@ class GridServer:
     def start_game(self):
         self.game_started = True
         self.spawn_player_items()
+        self.spawn_powerups()
         self.broadcast_state()
+        if not getattr(self, "spawner_active", False):
+            self.start_periodic_spawner()
 
     def reset_game(self):
         for p_id in list(self.players.keys()):
@@ -269,14 +470,19 @@ class GridServer:
             self.player_visited[p_id]   = {(r, c)}
             self.player_collected[p_id] = {}
             self.player_item_keys[p_id] = {}
+            self.player_powerups[p_id]  = [None, None, None]
         self.spawn_player_items()
+        self.spawn_powerups()
         play_sound("reset")
         if self.on_game_update:
             self.on_game_update()
         self.broadcast_state()
+        if not getattr(self, "spawner_active", False):
+            self.start_periodic_spawner()
 
     def stop(self):
         self.server_running = False
+        self.spawner_active = False
         if self.server_socket:
             try:
                 self.server_socket.close()

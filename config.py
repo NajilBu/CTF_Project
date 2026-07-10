@@ -12,6 +12,11 @@ CELL_SIZE   = 65
 CANVAS_WIDTH  = GRID_COLS * CELL_SIZE   # 1300
 CANVAS_HEIGHT = GRID_ROWS * CELL_SIZE   # 650
 
+# Difficulty levels
+DIFFICULTY_EASY   = "easy"    # 3 items, short words, small shifts
+DIFFICULTY_MEDIUM = "medium"  # 3 items, long words, large shifts
+DIFFICULTY_HARD   = "hard"    # 4 items, long words, large shifts + cells close every 30 s
+
 
 
 # Player Colors

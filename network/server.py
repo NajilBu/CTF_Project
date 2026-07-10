@@ -12,16 +12,22 @@ POWERUPS = [
     {"id": "reveal", "label": "Reveal",      "icon": "🔍"},
 ]
 
-def make_caesar_clue():
-    words = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "DECRYPT", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING"]
-    word = random.choice(words)
-    shift = random.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
+# Word pools for Caesar cipher clues
+_WORDS_EASY   = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING", "DECODE"]
+_WORDS_HARD   = ["CRYPTOGRAPHY", "INFILTRATE", "DECRYPTION", "ALGORITHM", "CLASSIFIED", "ENCRYPTION", "OBFUSCATE", "INTERCEPT", "VULNERABLE", "PENETRATE", "FRAMEWORK", "CYBERCRIME"]
+
+def make_caesar_clue(difficulty="easy"):
+    if difficulty in ("medium", "hard"):
+        word  = random.choice(_WORDS_HARD)
+        shift = random.choice(list(range(-13, 0)) + list(range(1, 14)))
+    else:
+        word  = random.choice(_WORDS_EASY)
+        shift = random.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
     cipher = []
     for char in word:
         shifted = (ord(char) - ord('A') + shift) % 26
         cipher.append(chr(ord('A') + shifted))
-    cipher_word = "".join(cipher)
-    return f"{word}|{cipher_word}|{shift}"
+    return f"{word}|{''.join(cipher)}|{shift}"
 
 class GridServer:
     def __init__(self, port=5555, max_players=4, on_lobby_update=None, on_game_update=None):
@@ -47,6 +53,14 @@ class GridServer:
         self.powerups         = {}  # (r, c) -> powerup_id str  (remaining on map)
         self.player_powerups  = {}  # p_id -> [slot0, slot1, slot2]  (None or powerup_id)
 
+        # Finish order — p_ids appended in the order they collect all items
+        self.finished_players = []  # [p_id, ...]  (ordered by completion time)
+
+        # Difficulty state
+        self.difficulty            = "easy"
+        self.items_per_player      = 3
+        self.cell_close_timer_active = False
+
     # ------------------------------------------------------------------
     def _all_other_visited(self, p_id):
         """Return the union of all other players' visited cells."""
@@ -57,7 +71,7 @@ class GridServer:
         return result
 
     def spawn_player_items(self):
-        """Spawn 3 unique, globally-distinct items for every player, each with a Caesar cipher word clue."""
+        """Spawn items_per_player unique items for every player, each with a Caesar cipher clue."""
         all_visited = set()
         for v in self.player_visited.values():
             all_visited |= v
@@ -67,15 +81,14 @@ class GridServer:
             self.player_items[p_id] = set()
             self.player_item_keys[p_id] = {}
             attempts = 0
-            while len(self.player_items[p_id]) < 3 and attempts < 10000:
+            while len(self.player_items[p_id]) < self.items_per_player and attempts < 10000:
                 attempts += 1
                 r = random.randint(0, GRID_ROWS - 1)
                 c = random.randint(0, GRID_COLS - 1)
                 if (r, c) not in all_visited and (r, c) not in global_items:
                     self.player_items[p_id].add((r, c))
                     global_items.add((r, c))
-                    # Assign a Caesar cipher key clue to this item
-                    key = make_caesar_clue()
+                    key = make_caesar_clue(self.difficulty)
                     self.player_item_keys[p_id][(r, c)] = key
 
     def spawn_powerups(self):
@@ -239,6 +252,9 @@ class GridServer:
     def process_client_move(self, p_id, dr, dc):
         if p_id not in self.players or not self.game_started:
             return
+        # Finished players are locked in place — they cannot move
+        if p_id in self.finished_players:
+            return
         p = self.players[p_id]
         new_r = p["r"] + dr
         new_c = p["c"] + dc
@@ -302,16 +318,30 @@ class GridServer:
         item_keys = self.player_item_keys.get(p_id, {})
         items = self.player_items.get(p_id, set())
 
-        if pos in items and item_keys.get(pos) == str(entered_key):
-            # Correct key — collect the item
-            self.player_items[p_id].discard(pos)
-            del self.player_item_keys[p_id][pos]
-            self.player_collected[p_id][pos] = self.players[p_id]["color"]
-            play_sound("collect")
-            self._send_to(p_id, {"type": "unlock_result", "success": True})
-            if self.on_game_update:
-                self.on_game_update()
-            self.broadcast_state()
+        if pos in items:
+            stored_key = item_keys.get(pos)
+            correct_word = ""
+            if stored_key and "|" in stored_key:
+                correct_word = stored_key.split("|")[0]
+            else:
+                correct_word = str(stored_key)
+
+            if correct_word and str(entered_key).strip().upper() == correct_word.upper():
+                # Correct — collect the item
+                self.player_items[p_id].discard(pos)
+                del self.player_item_keys[p_id][pos]
+                self.player_collected[p_id][pos] = self.players[p_id]["color"]
+                play_sound("collect")
+                # Record finish order when all 3 items collected
+                if len(self.player_collected[p_id]) >= self.items_per_player and p_id not in self.finished_players:
+                    self.finished_players.append(p_id)
+                self._send_to(p_id, {"type": "unlock_result", "success": True})
+                if self.on_game_update:
+                    self.on_game_update()
+                self.broadcast_state()
+            else:
+                play_sound("qte_wrong")
+                self._send_to(p_id, {"type": "unlock_result", "success": False})
         else:
             play_sound("qte_wrong")
             self._send_to(p_id, {"type": "unlock_result", "success": False})
@@ -441,7 +471,10 @@ class GridServer:
             "map_powerups": [
                 {"r": r, "c": c, "id": pu_id}
                 for (r, c), pu_id in self.powerups.items()
-            ]
+            ],
+            "finished_players": list(self.finished_players),
+            "difficulty": self.difficulty,
+            "items_per_player": self.items_per_player
         }
         data_str = json.dumps(state_msg) + "\n"
         for conn in list(self.clients.values()):
@@ -451,13 +484,19 @@ class GridServer:
                 pass
 
     # ------------------------------------------------------------------
-    def start_game(self):
-        self.game_started = True
+    def start_game(self, difficulty="easy"):
+        self.difficulty        = difficulty
+        self.items_per_player  = 4 if difficulty == "hard" else 3
+        self.game_started      = True
+        self.finished_players  = []
+        self.cell_close_timer_active = False
         self.spawn_player_items()
         self.spawn_powerups()
         self.broadcast_state()
         if not getattr(self, "spawner_active", False):
             self.start_periodic_spawner()
+        if difficulty == "hard":
+            self.start_cell_close_timer()
 
     def reset_game(self):
         for p_id in list(self.players.keys()):
@@ -471,6 +510,8 @@ class GridServer:
             self.player_collected[p_id] = {}
             self.player_item_keys[p_id] = {}
             self.player_powerups[p_id]  = [None, None, None]
+        self.finished_players = []
+        self.cell_close_timer_active = False
         self.spawn_player_items()
         self.spawn_powerups()
         play_sound("reset")
@@ -479,6 +520,38 @@ class GridServer:
         self.broadcast_state()
         if not getattr(self, "spawner_active", False):
             self.start_periodic_spawner()
+        if self.difficulty == "hard":
+            self.start_cell_close_timer()
+
+    def start_cell_close_timer(self):
+        """Hard mode: every 30 s re-close 2-5 visited cells per player."""
+        self.cell_close_timer_active = True
+        def _tick():
+            if not self.game_started or not self.server_running or not self.cell_close_timer_active:
+                return
+            self._close_random_cells()
+            threading.Timer(30.0, _tick).start()
+        threading.Timer(30.0, _tick).start()
+
+    def _close_random_cells(self):
+        changed = False
+        for p_id, visited in list(self.player_visited.items()):
+            if p_id not in self.players:
+                continue
+            player_pos    = (self.players[p_id]["r"], self.players[p_id]["c"])
+            items_pos     = self.player_items.get(p_id, set())
+            collected_pos = set(self.player_collected.get(p_id, {}).keys())
+            # Eligible: visited, but not current position, not an item cell, not already collected
+            eligible = list(visited - {player_pos} - items_pos - collected_pos)
+            if len(eligible) < 2:
+                continue
+            count = random.randint(2, min(5, len(eligible)))
+            for cell in random.sample(eligible, count):
+                self.player_visited[p_id].discard(cell)
+            changed = True
+        if changed:
+            play_sound("reset")
+            self.broadcast_state()
 
     def stop(self):
         self.server_running = False

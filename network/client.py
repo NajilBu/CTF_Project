@@ -22,6 +22,10 @@ class GridClient:
 
         self.players = {}        # p_id -> {"r", "c", "color", "ip"}
         self.per_player_data = {}  # p_id -> {"visited": set, "items": set, "collected": dict}
+        self.map_powerups = {}   # (r, c) -> powerup_id
+        self.finished_players = []  # p_ids in the order they finished (earliest first)
+        self.difficulty       = "easy"
+        self.items_per_player = 3
 
     # ------------------------------------------------------------------
     def get_my_visited(self):
@@ -114,6 +118,10 @@ class GridClient:
 
                         if self.on_state_update:
                             self.on_state_update()
+
+                        self.finished_players = msg.get("finished_players", [])
+                        self.difficulty        = msg.get("difficulty", "easy")
+                        self.items_per_player  = msg.get("items_per_player", 3)
 
                     elif msg.get("type") == "unlock_result":
                         success = msg.get("success", False)

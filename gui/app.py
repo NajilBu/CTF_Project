@@ -7,19 +7,24 @@ from config import (
     CANVAS_WIDTH, CANVAS_HEIGHT, COLORS, COLOR_NAMES, play_sound
 )
 from network import GridServer, GridClient
-from gui.dialogs import CustomIPDialog, CustomPlayerCountDialog, CustomLockDialog, LockScreenDialog, TeleportDialog
+from gui.dialogs import CustomIPDialog, CustomPlayerCountDialog, CustomLockDialog, LockScreenDialog, TeleportDialog, CustomDifficultyDialog
 
 # Powerup display metadata (mirrors POWERUPS list in server.py)
-def make_caesar_clue():
-    words = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "DECRYPT", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING"]
-    word = random.choice(words)
-    shift = random.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
+_WORDS_EASY = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING", "DECODE"]
+_WORDS_HARD = ["CRYPTOGRAPHY", "INFILTRATE", "DECRYPTION", "ALGORITHM", "CLASSIFIED", "ENCRYPTION", "OBFUSCATE", "INTERCEPT", "VULNERABLE", "PENETRATE", "FRAMEWORK", "CYBERCRIME"]
+
+def make_caesar_clue(difficulty="easy"):
+    if difficulty in ("medium", "hard"):
+        word  = random.choice(_WORDS_HARD)
+        shift = random.choice(list(range(-13, 0)) + list(range(1, 14)))
+    else:
+        word  = random.choice(_WORDS_EASY)
+        shift = random.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
     cipher = []
     for char in word:
         shifted = (ord(char) - ord('A') + shift) % 26
         cipher.append(chr(ord('A') + shifted))
-    cipher_word = "".join(cipher)
-    return f"{word}|{cipher_word}|{shift}"
+    return f"{word}|{''.join(cipher)}|{shift}"
 
 POWERUP_META = {
     "speed":  {"label": "Speed Boost", "icon": "\u26a1", "color": "#ffd24d"},
@@ -69,6 +74,11 @@ class GridGameApp:
         self.visited_cells = set()   # solo-only
         self.hidden_items = set()     # solo-only
         self.collected_item_cells = {}  # solo-only
+
+        # Difficulty
+        self.difficulty       = "easy"
+        self.items_per_player = 3
+        self.solo_cell_close_active = False
 
         # Fonts
         self.title_font = font.Font(family="Segoe UI", size=32, weight="bold")
@@ -440,10 +450,17 @@ class GridGameApp:
 
     def start_host_active_game_screen(self):
         play_sound("click")
+        # Ask difficulty before starting
+        diff = CustomDifficultyDialog(self.root, self.button_font).show()
+        if not diff:
+            return
+        self.difficulty       = diff
+        self.items_per_player = 4 if diff == "hard" else 3
+
         self.game_started = True
         self.in_active_game = True
-        
-        self.server.start_game()
+
+        self.server.start_game(diff)
         self.players = self.server.players
         self.per_player_data = {}
         for p_id in self.server.players:
@@ -670,7 +687,7 @@ class GridGameApp:
         for widget in self.leaderboard_rows_frame.winfo_children():
             widget.destroy()
 
-        # Gather player scores
+        # Gather player data
         scores = []
         for p_id, p_info in self.players.items():
             p_data = self.per_player_data.get(p_id, {})
@@ -684,8 +701,17 @@ class GridGameApp:
                 "items": items_count
             })
 
-        # Sort: items (descending), moves (ascending)
-        scores.sort(key=lambda x: (-x["items"], x["moves"]))
+        # Finished players lock their rank by completion order;
+        # unfinished players sort below them by items desc, moves asc.
+        finished_list = getattr(self.client, "finished_players", []) if self.client else []
+
+        def sort_key(item):
+            p_id = item["id"]
+            if p_id in finished_list:
+                return (0, finished_list.index(p_id), 0)
+            return (1, -item["items"], item["moves"])
+
+        scores.sort(key=sort_key)
 
         # Draw rows
         for rank, item in enumerate(scores, 1):
@@ -693,21 +719,22 @@ class GridGameApp:
             p_color = item["color"]
             moves = item["moves"]
             items_found = item["items"]
-            color_name = COLOR_NAMES[(p_id - 1) % len(COLORS)]
+            is_finished = p_id in finished_list
 
-            row_frame = tk.Frame(self.leaderboard_rows_frame, bg="#1a1a24", pady=5)
+            row_frame = tk.Frame(self.leaderboard_rows_frame,
+                                 bg="#1e1e2e" if is_finished else "#1a1a24", pady=5)
             row_frame.pack(fill="x", padx=15, pady=4)
 
             rank_suffix = "th"
             if rank == 1: rank_suffix = "st"
             elif rank == 2: rank_suffix = "nd"
             elif rank == 3: rank_suffix = "rd"
-            
+
             lbl_rank = tk.Label(
                 row_frame,
                 text=f"{rank}{rank_suffix}",
                 fg="#ffd24d" if rank == 1 else "#8c8c9a",
-                bg="#1a1a24",
+                bg=row_frame["bg"],
                 font=("Segoe UI", 11, "bold"),
                 width=4,
                 anchor="w"
@@ -718,7 +745,7 @@ class GridGameApp:
                 row_frame,
                 text="⬤",
                 fg=p_color,
-                bg="#1a1a24",
+                bg=row_frame["bg"],
                 font=("Segoe UI", 12)
             )
             lbl_dot.pack(side="left", padx=5)
@@ -727,29 +754,44 @@ class GridGameApp:
                 row_frame,
                 text=f"PLAYER {p_id}",
                 fg="#ffffff",
-                bg="#1a1a24",
+                bg=row_frame["bg"],
                 font=("Segoe UI", 10, "bold")
             )
             lbl_player.pack(side="left", padx=5)
 
-            if items_found >= 3:
-                lbl_crown = tk.Label(
+            if is_finished:
+                # Locked badge — rank is permanently sealed
+                tk.Label(
                     row_frame,
-                    text="👑",
+                    text="\U0001f3c6 DONE",
                     fg="#ffd24d",
-                    bg="#1a1a24",
+                    bg=row_frame["bg"],
+                    font=("Segoe UI", 9, "bold")
+                ).pack(side="right", padx=5)
+                tk.Label(
+                    row_frame,
+                    text="\U0001f512",
+                    fg="#ffd24d",
+                    bg=row_frame["bg"],
                     font=("Segoe UI", 10)
-                )
-                lbl_crown.pack(side="left", padx=2)
+                ).pack(side="right")
+            else:
+                if items_found >= 3:
+                    tk.Label(
+                        row_frame,
+                        text="\U0001f451",
+                        fg="#ffd24d",
+                        bg=row_frame["bg"],
+                        font=("Segoe UI", 10)
+                    ).pack(side="left", padx=2)
 
-            lbl_stats = tk.Label(
-                row_frame,
-                text=f"{items_found}/3 Items ({moves} mv)",
-                fg="#55ff55" if items_found >= 3 else "#ffd24d" if items_found > 0 else "#8c8c9a",
-                bg="#1a1a24",
-                font=("Segoe UI", 10)
-            )
-            lbl_stats.pack(side="right", padx=5)
+                tk.Label(
+                    row_frame,
+                    text=f"{items_found}/3 Items ({moves} mv)",
+                    fg="#55ff55" if items_found >= 3 else "#ffd24d" if items_found > 0 else "#8c8c9a",
+                    bg=row_frame["bg"],
+                    font=("Segoe UI", 10)
+                ).pack(side="right", padx=5)
 
     # ------------------ CLIENT LOBBY LOGIC ------------------
 
@@ -1140,7 +1182,7 @@ class GridGameApp:
         player_pos = (self.players[my_id]["r"], self.players[my_id]["c"]) if my_id in self.players else None
         all_positions = sorted(list(items) + list(collected.keys()))
         items_data = []
-        for i, pos in enumerate(all_positions[:3]):
+        for i, pos in enumerate(all_positions[:self.items_per_player]):
             items_data.append({
                 "index":      i + 1,
                 "pos":        pos,
@@ -1228,6 +1270,14 @@ class GridGameApp:
 
     def start_solo_game(self):
         play_sound("click")
+        # Ask difficulty before starting
+        diff = CustomDifficultyDialog(self.root, self.button_font).show()
+        if not diff:
+            return   # player cancelled
+        self.difficulty       = diff
+        self.items_per_player = 4 if diff == "hard" else 3
+        self.solo_cell_close_active = False
+
         self.in_game = True
         self.my_player_id = "solo"
         self.clear_screen()
@@ -1245,6 +1295,8 @@ class GridGameApp:
         self.players = {"solo": {"r": self.player_r, "c": self.player_c, "color": "#00d2ff"}}
         self.visited_cells = {(self.player_r, self.player_c)}
         self.spawn_solo_hidden_items()
+        if self.difficulty == "hard":
+            self._start_solo_cell_close_timer()
 
         # Game Frame
         self.current_frame = tk.Frame(self.root, bg="#121214")
@@ -1719,11 +1771,18 @@ class GridGameApp:
         if self.is_client:
             if not self.in_active_game or not self.my_player_id:
                 return
+            # Finished players are locked — no more movement
+            finished = getattr(self.client, "finished_players", []) if self.client else []
+            if self.my_player_id in finished:
+                return
             p_info = self.players.get(self.my_player_id)
             if not p_info:
                 return
             r, c = p_info["r"], p_info["c"]
         elif self.my_player_id == "solo":
+            # Solo: lock after all items collected
+            if len(getattr(self, 'collected_item_cells', {})) >= self.items_per_player:
+                return
             r, c = self.player_r, self.player_c
         else:
             return
@@ -1839,9 +1898,14 @@ class GridGameApp:
             self.lbl_moves.config(text="MOVES: 0")
             self.lbl_pos.config(text=f"POSITION: ({self.player_c}, {self.player_r})")
 
-            collected = 3 - len(self.hidden_items)
+            collected = self.items_per_player - len(self.hidden_items)
             if hasattr(self, 'lbl_items'):
-                self.lbl_items.config(text=f"ITEMS: {collected}/3")
+                self.lbl_items.config(text=f"ITEMS: {collected}/{self.items_per_player}")
+
+            # Restart hard-mode cell-close timer
+            self.solo_cell_close_active = False
+            if self.difficulty == "hard":
+                self._start_solo_cell_close_timer()
 
             play_sound("reset")
             self.draw_elements()
@@ -1851,12 +1915,35 @@ class GridGameApp:
         if not hasattr(self, 'solo_item_keys'):
             self.solo_item_keys = {}
         self.solo_item_keys.clear()
-        while len(self.hidden_items) < 3:
+        while len(self.hidden_items) < self.items_per_player:
             r = random.randint(0, GRID_ROWS - 1)
             c = random.randint(0, GRID_COLS - 1)
             if (r, c) != (self.player_r, self.player_c):
                 self.hidden_items.add((r, c))
-                self.solo_item_keys[(r, c)] = make_caesar_clue()
+                self.solo_item_keys[(r, c)] = make_caesar_clue(self.difficulty)
+
+    def _start_solo_cell_close_timer(self):
+        """Hard mode: every 30 s re-close 2-5 visited cells in solo."""
+        import threading
+        self.solo_cell_close_active = True
+        def _tick():
+            if not self.in_game or self.my_player_id != "solo" or not self.solo_cell_close_active:
+                return
+            self._solo_close_random_cells()
+            threading.Timer(30.0, _tick).start()
+        threading.Timer(30.0, _tick).start()
+
+    def _solo_close_random_cells(self):
+        player_pos    = (self.player_r, self.player_c)
+        collected_pos = set(self.collected_item_cells.keys())
+        eligible = list(self.visited_cells - {player_pos} - self.hidden_items - collected_pos)
+        if len(eligible) < 2:
+            return
+        count = random.randint(2, min(5, len(eligible)))
+        for cell in random.sample(eligible, count):
+            self.visited_cells.discard(cell)
+        play_sound("reset")
+        self.root.after(0, self.draw_elements)
 
     def open_lock_dialog_solo(self):
         """Open the 3-keyhole vault screen for solo mode."""
@@ -1865,12 +1952,12 @@ class GridGameApp:
         remaining   = self.hidden_items
         collected   = self.collected_item_cells   # (r,c) -> color
 
-        # Build full sorted list of all 3 item positions
+        # Build full sorted list of all items (3 or 4 depending on difficulty)
         player_pos = (self.player_r, self.player_c)
         all_positions = sorted(list(remaining) + list(collected.keys()))
 
         items_data = []
-        for i, pos in enumerate(all_positions[:3]):
+        for i, pos in enumerate(all_positions[:self.items_per_player]):
             items_data.append({
                 "index":      i + 1,
                 "pos":        pos,

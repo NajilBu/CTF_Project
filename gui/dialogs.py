@@ -256,6 +256,138 @@ class CustomPlayerCountDialog:
         val = result_var.get()
         return int(val) if val else None
 
+class CustomDifficultyDialog:
+    """Two-step difficulty picker: select -> confirm (or go back)."""
+    def __init__(self, parent, button_font):
+        self.parent = parent
+        self.button_font = button_font
+
+    def show(self):
+        result_var = tk.StringVar(value="")
+
+        dialog = tk.Toplevel(self.parent)
+        dialog.title("Select Difficulty")
+        dialog.configure(bg="#121214")
+        dialog.resizable(False, False)
+
+        dw, dh = 640, 340
+        px = self.parent.winfo_x()
+        py = self.parent.winfo_y()
+        pw = self.parent.winfo_width()
+        ph = self.parent.winfo_height()
+        dialog.geometry(f"{dw}x{dh}+{px+pw//2-dw//2}+{py+ph//2-dh//2}")
+        dialog.transient(self.parent)
+        dialog.grab_set()
+
+        LEVELS = {
+            "easy":   ("\U0001f7e2 EASY",   "#55ff55", "#121214",
+                       "Short words  •  Shift \xb11-5  •  3 keyholes",
+                       "A relaxed cipher challenge \u2014 good for first-timers."),
+            "medium": ("\U0001f7e1 MEDIUM", "#ffd24d", "#121214",
+                       "Long words  •  Shift \xb11-13  •  3 keyholes",
+                       "Harder words and wider shift range."),
+            "hard":   ("\U0001f534 HARD",   "#ff4d4d", "#ffffff",
+                       "Long words  •  Shift \xb11-13  •  4 keyholes  •  Cells close every 30 s",
+                       "\u26a0\ufe0f  WARNING: Explored cells will randomly close every 30 seconds!"),
+        }
+
+        # Main content container (swapped between selection and confirm views)
+        container = tk.Frame(dialog, bg="#121214")
+        container.pack(fill="both", expand=True)
+
+        def clear():
+            for w in container.winfo_children():
+                w.destroy()
+
+        def show_confirm(key):
+            label, bg_col, fg_col, desc, warn = LEVELS[key]
+            clear()
+
+            tk.Label(container, text="CONFIRM DIFFICULTY",
+                     fg="#ffd24d", bg="#121214",
+                     font=font.Font(family="Segoe UI", size=14, weight="bold")
+                     ).pack(pady=(24, 6))
+
+            # Difficulty badge
+            tk.Label(container, text=label,
+                     fg=fg_col, bg=bg_col,
+                     font=font.Font(family="Segoe UI", size=13, weight="bold"),
+                     padx=18, pady=6
+                     ).pack()
+
+            tk.Label(container, text=desc,
+                     fg="#8c8c9a", bg="#121214",
+                     font=font.Font(family="Segoe UI", size=9)
+                     ).pack(pady=(8, 2))
+
+            tk.Label(container, text=warn,
+                     fg="#ff9f1a" if key == "hard" else "#5f5f6e",
+                     bg="#121214",
+                     font=font.Font(family="Segoe UI", size=9, weight="bold" if key == "hard" else "normal"),
+                     wraplength=420, justify="center"
+                     ).pack(pady=(2, 16))
+
+            btn_row = tk.Frame(container, bg="#121214")
+            btn_row.pack()
+
+            def go_back():
+                show_select()
+
+            def confirm():
+                result_var.set(key)
+                dialog.destroy()
+
+            tk.Button(btn_row, text="\u2190  BACK",
+                      command=go_back,
+                      bg="#212128", fg="#8c8c9a",
+                      activebackground="#2d2d37", activeforeground="#ffffff",
+                      font=self.button_font, bd=0, width=12, pady=7, cursor="hand2"
+                      ).pack(side="left", padx=(0, 12))
+
+            tk.Button(btn_row, text="\u2714  CONFIRM",
+                      command=confirm,
+                      bg=bg_col, fg=fg_col,
+                      activebackground=bg_col, activeforeground=fg_col,
+                      font=self.button_font, bd=0, width=12, pady=7, cursor="hand2"
+                      ).pack(side="left")
+
+        def show_select():
+            clear()
+
+            tk.Label(container, text="SELECT DIFFICULTY",
+                     fg="#ffd24d", bg="#121214",
+                     font=font.Font(family="Segoe UI", size=14, weight="bold")
+                     ).pack(pady=(22, 8))
+
+            for key, (label, bg_col, fg_col, desc, _) in LEVELS.items():
+                row = tk.Frame(container, bg="#121214")
+                row.pack(fill="x", padx=30, pady=7)
+
+                tk.Button(row, text=label,
+                          command=lambda k=key: show_confirm(k),
+                          bg=bg_col, fg=fg_col,
+                          activebackground=bg_col, activeforeground=fg_col,
+                          font=self.button_font, bd=0, width=14, pady=6, cursor="hand2"
+                          ).pack(side="left")
+                tk.Label(row, text=desc, fg="#8c8c9a", bg="#121214",
+                         font=font.Font(family="Segoe UI", size=9), justify="left",
+                         wraplength=440
+                         ).pack(side="left", padx=12)
+
+            tk.Button(container, text="CANCEL",
+                      command=dialog.destroy,
+                      bg="#212128", fg="#8c8c9a",
+                      activebackground="#ff4d4d", activeforeground="#ffffff",
+                      font=self.button_font, bd=0, pady=6, width=14, cursor="hand2"
+                      ).pack(pady=(4, 16))
+
+        show_select()   # start on the selection screen
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        self.parent.wait_window(dialog)
+        return result_var.get() or None
+
+
 class CustomLockDialog:
     def __init__(self, parent, button_font):
         self.parent = parent
@@ -394,11 +526,13 @@ class LockScreenDialog:
         dialog.configure(bg="#0e0e16")
         dialog.resizable(False, False)
 
-        dw, dh = 680, 400
-        px = self.parent.winfo_x()
-        py = self.parent.winfo_y()
-        pw = self.parent.winfo_width()
-        ph = self.parent.winfo_height()
+        n   = len(self.items_data)
+        dw  = max(680, 200 * n + 80)   # scale width with panel count
+        dh  = 400
+        px  = self.parent.winfo_x()
+        py  = self.parent.winfo_y()
+        pw  = self.parent.winfo_width()
+        ph  = self.parent.winfo_height()
         dialog.geometry(f"{dw}x{dh}+{px + pw//2 - dw//2}+{py + ph//2 - dh//2}")
         dialog.transient(self.parent)
         dialog.grab_set()
@@ -413,10 +547,10 @@ class LockScreenDialog:
                  font=font.Font(family="Segoe UI", size=9)
                  ).pack(pady=(0, 14))
 
-        # 3 keyhole panels — grid with uniform columns for equal sizing
+        # Dynamic keyhole panels
         row = tk.Frame(dialog, bg="#0e0e16")
         row.pack(fill="x", padx=18)
-        for col in range(3):
+        for col in range(n):
             row.columnconfigure(col, weight=1, uniform="keyhole")
 
         for i, item in enumerate(self.items_data):

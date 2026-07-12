@@ -25,6 +25,8 @@ class GridClient:
         self.players = {}        # p_id -> {"r", "c", "color", "ip"}
         self.per_player_data = {}  # p_id -> {"visited": set, "items": set, "collected": dict}
         self.map_powerups = {}   # (r, c) -> powerup_id
+        self.move_item_targets = set()
+        self.chat_history = []
         self.finished_players = []  # p_ids in the order they finished (earliest first)
         self.finish_target = 1
         self.match_finished = False
@@ -97,6 +99,10 @@ class GridClient:
                             (entry["r"], entry["c"]): entry["id"]
                             for entry in msg.get("map_powerups", [])
                         }
+                        self.move_item_targets = {
+                            int(player_id) for player_id in msg.get("move_item_targets", [])
+                        }
+                        self.chat_history = list(msg.get("chat_history", []))
 
                         # Parse per-player data
                         per_player_raw = msg.get("per_player", {})
@@ -194,6 +200,15 @@ class GridClient:
         except Exception:
             pass
 
+    def send_chat(self, message):
+        if not self.client_running:
+            return
+        try:
+            payload = {"action": "chat", "text": str(message)}
+            self.client_socket.sendall((json.dumps(payload) + "\n").encode())
+        except Exception:
+            pass
+
     def stop(self):
         self.client_running = False
         if self.client_socket:
@@ -204,3 +219,5 @@ class GridClient:
             self.client_socket = None
         self.players.clear()
         self.per_player_data.clear()
+        self.move_item_targets.clear()
+        self.chat_history.clear()

@@ -91,6 +91,9 @@ class GridGameApp:
         self.difficulty       = "easy"
         self.items_per_player = 3
         self.solo_cell_close_active = False
+        self.preferred_name = "Player"
+        self.preferred_color = COLORS[0]
+        self.profile_customized = False
 
         # Fonts
         self.title_font = font.Font(family="Segoe UI", size=32, weight="bold")
@@ -180,7 +183,7 @@ class GridGameApp:
 
         shell = tk.Frame(self.current_frame, bg="#0d141e", highlightthickness=1,
                          highlightbackground="#1b4055")
-        shell.place(relx=.5, rely=.49, anchor="center", width=760, height=650)
+        shell.place(relx=.5, rely=.49, anchor="center", width=760, height=710)
         tk.Frame(shell, bg="#00d2ff", height=4).pack(fill="x")
         tk.Label(shell, text="◈  CTF OPERATIONS CONSOLE  /  NODE 01", fg="#5f8197",
                  bg="#0d141e", font=("Consolas", 9, "bold"), anchor="w").pack(
@@ -260,6 +263,17 @@ class GridGameApp:
         )
         btn_join.pack(fill="x", pady=6)
         add_hover(btn_join, "#313143", "#42425b")
+
+        btn_profile = tk.Button(
+            btn_container,
+            text="04   EDIT OPERATOR PROFILE                         â€º",
+            command=self.edit_title_profile,
+            bg="#1b2836", fg="#ffd24d", activebackground="#32485e",
+            activeforeground="#ffffff", font=self.button_font, bd=0,
+            anchor="w", pady=12, cursor="hand2"
+        )
+        btn_profile.pack(fill="x", pady=6)
+        add_hover(btn_profile, "#1b2836", "#32485e")
 
         # Exit
         btn_exit = tk.Button(
@@ -438,6 +452,69 @@ class GridGameApp:
             lbl_status.pack(anchor="w", padx=20)
             self.slot_status_labels.append(lbl_status)
 
+    def build_lobby_chat_ui(self):
+        if hasattr(self, "chat_frame") and self.chat_frame:
+            try:
+                self.chat_frame.destroy()
+            except Exception:
+                pass
+        self.chat_frame = tk.Frame(self.current_frame, bg="#1a1a24", bd=1, relief="solid")
+        self.chat_frame.pack(fill="x", padx=55, pady=(4, 14))
+        tk.Label(self.chat_frame, text="LOBBY CHAT", fg="#ffd24d", bg="#1a1a24",
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(8, 3))
+        self.chat_text = tk.Text(
+            self.chat_frame, height=6, bg="#121214", fg="#ffffff",
+            bd=0, wrap="word", state="disabled", font=("Segoe UI", 9)
+        )
+        self.chat_text.pack(fill="x", padx=12, pady=4)
+        entry_row = tk.Frame(self.chat_frame, bg="#1a1a24")
+        entry_row.pack(fill="x", padx=12, pady=(2, 10))
+        self.chat_entry = tk.Entry(
+            entry_row, bg="#212128", fg="#ffffff", insertbackground="#ffffff",
+            bd=0, font=("Segoe UI", 10)
+        )
+        self.chat_entry.pack(side="left", fill="x", expand=True, ipady=7)
+        self.chat_entry.bind("<Return>", lambda e: self.send_lobby_chat())
+        tk.Button(
+            entry_row, text="SEND", command=self.send_lobby_chat,
+            bg="#00d2ff", fg="#121214", activebackground="#00a3cc",
+            activeforeground="#121214", bd=0, padx=18, pady=7,
+            font=self.button_font, cursor="hand2"
+        ).pack(side="right", padx=(8, 0))
+        self.update_chat_ui()
+
+    def current_chat_history(self):
+        if self.is_host and self.server:
+            return self.server.chat_history
+        if self.is_client and self.client:
+            return self.client.chat_history
+        return []
+
+    def update_chat_ui(self):
+        if not hasattr(self, "chat_text") or not self.chat_text.winfo_exists():
+            return
+        self.chat_text.config(state="normal")
+        self.chat_text.delete("1.0", tk.END)
+        for index, message in enumerate(self.current_chat_history()):
+            tag = f"chat_{index}"
+            self.chat_text.tag_config(tag, foreground=message.get("color", "#ffffff"))
+            prefix = "" if message.get("kind") == "system" else f"{message.get('name', 'Player')}: "
+            self.chat_text.insert(tk.END, prefix + message.get("text", "") + "\n", tag)
+        self.chat_text.config(state="disabled")
+        self.chat_text.see(tk.END)
+
+    def send_lobby_chat(self):
+        if not hasattr(self, "chat_entry"):
+            return
+        text = self.chat_entry.get().strip()
+        if not text:
+            return
+        self.chat_entry.delete(0, tk.END)
+        if self.is_host and self.server:
+            self.server.send_host_chat(text)
+        elif self.is_client and self.client:
+            self.client.send_chat(text)
+
     def update_lobby_ui(self):
         if not hasattr(self, 'slot_status_labels') or not self.slot_status_labels:
             return
@@ -497,6 +574,7 @@ class GridGameApp:
                 text=f"MULTIPLAYER LOBBY - {mine.get('name', f'Player {self.my_player_id}')} (P{self.my_player_id})",
                 fg=mine.get("color", "#ffd24d")
             )
+        self.update_chat_ui()
 
     def on_server_game_update(self):
         if self.server:
@@ -1019,9 +1097,22 @@ class GridGameApp:
         self.btn_ready.config(state="normal", bg="#55ff55", fg="#121214")
         self.btn_profile.config(state="normal")
         self.build_lobby_slots_ui()
+        self.build_lobby_chat_ui()
         if not self.profile_prompted:
             self.profile_prompted = True
-            self.root.after(100, self.edit_profile_action)
+            if self.profile_customized:
+                self.client.send_profile(self.preferred_name, self.preferred_color)
+            else:
+                self.root.after(100, self.edit_profile_action)
+
+    def edit_title_profile(self):
+        result = PlayerProfileDialog(
+            self.root, self.button_font,
+            self.preferred_name, self.preferred_color, COLORS,
+        ).show()
+        if result:
+            self.preferred_name, self.preferred_color = result
+            self.profile_customized = True
 
     def edit_profile_action(self):
         if not self.client or not self.my_player_id or self.game_started:
@@ -1034,6 +1125,8 @@ class GridGameApp:
             COLORS,
         ).show()
         if result:
+            self.preferred_name, self.preferred_color = result
+            self.profile_customized = True
             self.client.send_profile(*result)
 
     def on_profile_result_received(self, success, reason):
@@ -1482,7 +1575,7 @@ class GridGameApp:
             play_sound("qte_wrong")
             messagebox.showinfo(
                 "No Discovered Items",
-                "Discover an opponent's item before using Move Item."
+                "No opponent currently has an item discovered by any player."
             )
             return
         TeleportDialog(
@@ -1492,12 +1585,11 @@ class GridGameApp:
         )
 
     def eligible_item_displacement_players(self):
-        my_visited = self.per_player_data.get(self.my_player_id, {}).get("visited", set())
+        eligible_ids = self.client.move_item_targets if self.client else set()
         return {
             p_id: player
             for p_id, player in self.players.items()
-            if p_id != self.my_player_id
-            and bool(self.per_player_data.get(p_id, {}).get("items", set()) & my_visited)
+            if p_id in eligible_ids
         }
 
     def show_player_teleport_selection_dialog(self, slot):

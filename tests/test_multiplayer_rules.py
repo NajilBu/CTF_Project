@@ -112,6 +112,7 @@ class MultiplayerRulesTest(unittest.TestCase):
         self.assertEqual(server.players[1]["color"], "#12abef")
         self.assertTrue(sent[-1][1]["success"])
         self.assertEqual(broadcasts, [True])
+        self.assertIn("is now known as Alice Grid", server.chat_history[-1]["text"])
 
     def test_duplicate_profile_color_is_rejected(self):
         server = self.make_server()
@@ -123,6 +124,33 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         self.assertFalse(sent[-1][1]["success"])
         self.assertIn("already used", sent[-1][1]["reason"])
+
+    def test_player_and_host_chat_use_authoritative_identity(self):
+        server = self.make_server()
+        server.game_started = False
+        server.players[1]["name"] = "Alice"
+        server.players[1]["color"] = "#123456"
+
+        self.assertTrue(server.process_client_chat(1, "  hello    team  "))
+        self.assertTrue(server.send_host_chat("Prepare to start"))
+
+        self.assertEqual(server.chat_history[-2], {
+            "kind": "player", "name": "Alice", "color": "#123456",
+            "text": "hello team",
+        })
+        self.assertEqual(server.chat_history[-1]["kind"], "host")
+        self.assertEqual(server.chat_history[-1]["name"], "HOST")
+
+    def test_chat_rejects_blank_messages_and_bounds_history(self):
+        server = self.make_server()
+        server.game_started = False
+        self.assertFalse(server.process_client_chat(1, "   \n\t "))
+
+        for index in range(110):
+            server._append_chat("system", "SYSTEM", "#8c8c9a", f"Event {index}", broadcast=False)
+
+        self.assertEqual(len(server.chat_history), 100)
+        self.assertEqual(server.chat_history[0]["text"], "Event 10")
 
     @patch("network.server.play_sound", lambda *_: None)
     def test_reset_preserves_player_profile(self):
@@ -163,6 +191,7 @@ class MultiplayerRulesTest(unittest.TestCase):
             if (r, c) != destination
         }
         server.player_powerups[1][1] = "shield"
+        server.host_discovered_items.add(source)
 
         server.process_client_powerup(1, 1, target_id=2)
 
@@ -177,7 +206,7 @@ class MultiplayerRulesTest(unittest.TestCase):
         server.process_client_powerup(1, 1, target_id=2)
         self.assertEqual(server.player_powerups[1][1], "shield")
 
-    def test_powerup_two_lists_only_players_with_locally_discovered_items(self):
+    def test_powerup_two_lists_only_players_with_globally_discovered_items(self):
         app = GridGameApp.__new__(GridGameApp)
         app.my_player_id = 1
         app.players = {1: {}, 2: {}, 3: {}}
@@ -186,6 +215,7 @@ class MultiplayerRulesTest(unittest.TestCase):
             2: {"items": {(2, 2), (5, 5)}},
             3: {"items": {(4, 4)}},
         }
+        app.client = type("Client", (), {"move_item_targets": {2}})()
         self.assertEqual(set(app.eligible_item_displacement_players()), {2})
 
     def test_host_item_discovery_is_private_and_owner_neutral(self):
@@ -197,6 +227,31 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         self.assertEqual(app.host_visible_items(), {(2, 2)})
         self.assertNotIn("host_discovered_items", server._build_state(1))
+
+    def test_move_item_targets_expose_ids_without_hidden_coordinates(self):
+        server = self.make_server()
+        server.player_items = {1: {(2, 2)}, 2: {(3, 3)}}
+        server.host_discovered_items = {(3, 3)}
+
+        state = server._build_state(1)
+
+        self.assertEqual(state["move_item_targets"], [2])
+        self.assertNotIn("host_discovered_items", state)
+
+    @patch("network.server.random.randint", side_effect=[9, 19, 8, 19, 7, 19])
+    def test_periodic_powerups_stop_at_three_per_type(self, _randint):
+        server = self.make_server()
+        server.powerups = {
+            (0, 0): "reveal", (0, 1): "reveal",
+            (1, 0): "shield", (1, 1): "shield",
+            (2, 0): "speed", (2, 1): "speed",
+        }
+
+        server.spawn_periodic_powerups_once()
+        server.spawn_periodic_powerups_once()
+
+        for powerup_id in ("reveal", "shield", "speed"):
+            self.assertEqual(list(server.powerups.values()).count(powerup_id), 3)
 
 
 class EnterVaultTest(unittest.TestCase):

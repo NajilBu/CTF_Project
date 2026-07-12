@@ -14,6 +14,9 @@ POWERUPS = [
     {"id": "reveal", "label": "Reveal",      "icon": "🔍"},
 ]
 POWERUP_SLOTS = {"reveal": 0, "shield": 1, "speed": 2}
+MAX_MAP_POWERUPS_PER_TYPE = 3
+MAX_CHAT_MESSAGES = 100
+MAX_CHAT_LENGTH = 240
 
 # Word pools for Caesar cipher clues
 _WORDS_EASY   = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING", "DECODE"]
@@ -42,6 +45,7 @@ class GridServer:
         self.server_socket = None
         self.server_running = False
         self.game_started = False
+        self.chat_history = []
         self.countdown = 0
         self.countdown_active = False
 
@@ -149,22 +153,29 @@ class GridServer:
                         and getattr(self, "spawner_active", False)):
                     break
                 
-                # Spawn 1 of each powerup type anywhere on the grid
-                for pu in POWERUPS:
-                    attempts = 0
-                    while attempts < 1000:
-                        attempts += 1
-                        r = random.randint(0, GRID_ROWS - 1)
-                        c = random.randint(0, GRID_COLS - 1)
-                        if (r, c) not in self.powerups:
-                            self.powerups[(r, c)] = pu["id"]
-                            break
+                self.spawn_periodic_powerups_once()
                 
                 if self.on_game_update:
                     self.on_game_update()
                 self.broadcast_state()
                 
         threading.Thread(target=spawner_loop, daemon=True).start()
+
+    def spawn_periodic_powerups_once(self):
+        """Spawn at most one of each type without exceeding the per-type map cap."""
+        for pu in POWERUPS:
+            pu_id = pu["id"]
+            current_count = sum(1 for value in self.powerups.values() if value == pu_id)
+            if current_count >= MAX_MAP_POWERUPS_PER_TYPE:
+                continue
+            for _ in range(1000):
+                position = (
+                    random.randint(0, GRID_ROWS - 1),
+                    random.randint(0, GRID_COLS - 1),
+                )
+                if position not in self.powerups:
+                    self.powerups[position] = pu_id
+                    break
 
     # ------------------------------------------------------------------
     def start(self):
@@ -229,6 +240,12 @@ class GridServer:
             except Exception:
                 pass
 
+            self._append_chat(
+                "system", "SYSTEM", "#8c8c9a",
+                f"{self.players[p_id]['name']} joined the lobby.",
+                broadcast=False,
+            )
+
             if self.on_lobby_update:
                 self.on_lobby_update()
             self.broadcast_state()
@@ -265,6 +282,8 @@ class GridServer:
                         self.process_client_powerup(p_id, msg.get("slot", 0), msg.get("target_id"))
                     elif msg.get("action") == "profile":
                         self.process_client_profile(p_id, msg.get("name", ""), msg.get("color", ""))
+                    elif msg.get("action") == "chat":
+                        self.process_client_chat(p_id, msg.get("text", ""))
             except Exception:
                 break
 
@@ -272,12 +291,18 @@ class GridServer:
             conn.close()
         except Exception:
             pass
+        leaving_name = self.players.get(p_id, {}).get("name", f"Player {p_id}")
         self.host_discovered_items.difference_update(self.player_items.get(p_id, set()))
         for d in (self.clients, self.players,
                   self.player_visited, self.player_items, self.player_collected,
                   self.player_item_keys, self.player_powerups):
             if p_id in d:
                 del d[p_id]
+
+        self._append_chat(
+            "system", "SYSTEM", "#8c8c9a",
+            f"{leaving_name} left the lobby.", broadcast=False,
+        )
 
         if self.on_lobby_update:
             self.on_lobby_update()
@@ -317,12 +342,51 @@ class GridServer:
             })
             return
 
+        old_name = self.players[p_id].get("name", f"Player {p_id}")
         self.players[p_id]["name"] = clean_name
         self.players[p_id]["color"] = clean_color
         self._send_to(p_id, {"type": "profile_result", "success": True})
         if self.on_lobby_update:
             self.on_lobby_update()
+        if old_name != clean_name:
+            self._append_chat(
+                "system", "SYSTEM", "#8c8c9a",
+                f"{old_name} is now known as {clean_name}.", broadcast=False,
+            )
         self.broadcast_state()
+
+    @staticmethod
+    def clean_chat_text(text):
+        clean = " ".join(str(text).split())
+        return clean[:MAX_CHAT_LENGTH]
+
+    def _append_chat(self, kind, name, color, text, broadcast=True):
+        clean_text = self.clean_chat_text(text)
+        if not clean_text:
+            return False
+        self.chat_history.append({
+            "kind": kind, "name": name, "color": color, "text": clean_text,
+        })
+        self.chat_history = self.chat_history[-MAX_CHAT_MESSAGES:]
+        if self.on_lobby_update:
+            self.on_lobby_update()
+        if broadcast:
+            self.broadcast_state()
+        return True
+
+    def process_client_chat(self, p_id, text):
+        if p_id not in self.players or self.game_started:
+            return False
+        player = self.players[p_id]
+        return self._append_chat(
+            "player", player.get("name", f"Player {p_id}"),
+            player.get("color", "#ffffff"), text,
+        )
+
+    def send_host_chat(self, text):
+        if self.game_started:
+            return False
+        return self._append_chat("host", "HOST", "#ffd24d", text)
 
     # ------------------------------------------------------------------
     def process_client_move(self, p_id, dr, dc):
@@ -458,7 +522,7 @@ class GridServer:
             if owner_id in self.players and owner_id != p_id:
                 eligible_items = list(
                     self.player_items.get(owner_id, set())
-                    & self.player_visited.get(p_id, set())
+                    & self.host_discovered_items
                 )
                 source_pos = random.choice(eligible_items) if eligible_items else None
                 owner_visited = self.player_visited.get(owner_id, set())
@@ -560,13 +624,21 @@ class GridServer:
                 {"r": r, "c": c, "id": pu_id}
                 for (r, c), pu_id in self.powerups.items()
             ],
+            "move_item_targets": self.move_item_targets_for(recipient_id),
             "finished_players": list(self.finished_players),
             "finish_target": self.finish_target,
             "match_finished": self.match_finished,
             "difficulty": self.difficulty,
             "items_per_player": self.items_per_player,
             "countdown": self.countdown,
+            "chat_history": list(self.chat_history),
         }
+
+    def move_item_targets_for(self, p_id):
+        return [
+            owner_id for owner_id, items in self.player_items.items()
+            if owner_id != p_id and bool(items & self.host_discovered_items)
+        ]
 
     def broadcast_state(self):
         for p_id, conn in list(self.clients.items()):
@@ -699,3 +771,4 @@ class GridServer:
         self.player_items.clear()
         self.player_collected.clear()
         self.host_discovered_items.clear()
+        self.chat_history.clear()

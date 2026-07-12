@@ -60,6 +60,24 @@ class NetworkReconnectTest(unittest.TestCase):
             snapshots,
         )
 
+    def test_lobby_chat_reports_join_message_and_leave(self):
+        client = GridClient("127.0.0.1", port=self.port)
+        self.assertTrue(client.connect())
+        self.assertTrue(self.wait_for(lambda: client.my_player_id == 1))
+        self.assertTrue(self.wait_for(
+            lambda: any("joined the lobby" in msg["text"] for msg in self.server.chat_history)
+        ))
+
+        client.send_chat("hello lobby")
+        self.assertTrue(self.wait_for(
+            lambda: any(msg["text"] == "hello lobby" for msg in self.server.chat_history)
+        ))
+
+        client.stop()
+        self.assertTrue(self.wait_for(
+            lambda: any("left the lobby" in msg["text"] for msg in self.server.chat_history)
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,8 @@ class GridClient:
         self.per_player_data = {}  # p_id -> {"visited": set, "items": set, "collected": dict}
         self.map_powerups = {}   # (r, c) -> powerup_id
         self.finished_players = []  # p_ids in the order they finished (earliest first)
+        self.finish_target = 1
+        self.match_finished = False
         self.difficulty       = "easy"
         self.items_per_player = 3
 
@@ -119,6 +121,8 @@ class GridClient:
                             }
 
                         self.finished_players = msg.get("finished_players", [])
+                        self.finish_target     = msg.get("finish_target", 1)
+                        self.match_finished    = msg.get("match_finished", False)
                         self.difficulty        = msg.get("difficulty", "easy")
                         self.items_per_player  = msg.get("items_per_player", 3)
 

@@ -68,6 +68,8 @@ class GridGameApp:
         self.last_known_server_pos = None
         self.per_player_data = {}  # p_id -> {visited, items, collected}
         self.client_cell_arrows = {}  # frozen directions for client-discovered cells
+        self.showing_finish_screen = False
+        self.finish_screen_match_complete = False
 
         # Network Game States
         self.is_host = False
@@ -116,6 +118,7 @@ class GridGameApp:
         self.root.bind("<D>", lambda e: self.move_player(0, 1))
         self.root.bind("<Return>", lambda e: self.open_vault_at_current_item())
         self.root.bind("<KP_Enter>", lambda e: self.open_vault_at_current_item())
+        self.root.bind("<Escape>", lambda e: self.cancel_qte())
 
     def clear_screen(self):
         if self.current_frame:
@@ -144,6 +147,8 @@ class GridGameApp:
         self.qte_target_move = (0, 0)
         self.last_known_server_pos = None
         self.per_player_data = {}
+        self.showing_finish_screen = False
+        self.finish_screen_match_complete = False
         self.cleanup_network()
         self.clear_screen()
 
@@ -737,9 +742,16 @@ class GridGameApp:
             return
         num_players = len(self.players)
         max_p = getattr(self, "max_players", 6)
-        self.lbl_host_status.config(text=f"HOSTING SPECTATOR MODE | ACTIVE PLAYERS: {num_players}/{max_p}")
+        if self.server and self.server.match_finished:
+            self.lbl_host_status.config(
+                text=f"MATCH COMPLETE | FINISHERS: {len(self.server.finished_players)}/{self.server.finish_target}"
+            )
+            if hasattr(self, "footer"):
+                self.footer.config(text="Match Complete - Final Results")
+        else:
+            self.lbl_host_status.config(text=f"HOSTING SPECTATOR MODE | ACTIVE PLAYERS: {num_players}/{max_p}")
         if hasattr(self, 'lbl_items'):
-            total = 3 * num_players
+            total = self.items_per_player * num_players
             found = sum(len(d.get("collected", {})) for d in self.per_player_data.values())
             self.lbl_items.config(text=f"ITEMS: {found}/{total}")
         ip_list = [f"P{p_id}: {info['ip']} ({COLOR_NAMES[(p_id-1)%len(COLOR_NAMES)]})" 
@@ -781,7 +793,10 @@ class GridGameApp:
 
         # Finished players lock their rank by completion order;
         # unfinished players sort below them by items desc, moves asc.
-        finished_list = getattr(self.client, "finished_players", []) if self.client else []
+        finished_list = (
+            self.server.finished_players if self.is_host and self.server
+            else getattr(self.client, "finished_players", []) if self.client else []
+        )
 
         def sort_key(item):
             p_id = item["id"]
@@ -854,7 +869,7 @@ class GridGameApp:
                     font=("Segoe UI", 10)
                 ).pack(side="right")
             else:
-                if items_found >= 3:
+                if items_found >= self.items_per_player:
                     tk.Label(
                         row_frame,
                         text="\U0001f451",
@@ -865,8 +880,8 @@ class GridGameApp:
 
                 tk.Label(
                     row_frame,
-                    text=f"{items_found}/3 Items ({moves} mv)",
-                    fg="#55ff55" if items_found >= 3 else "#ffd24d" if items_found > 0 else "#8c8c9a",
+                    text=f"{items_found}/{self.items_per_player} Items ({moves} mv)",
+                    fg="#55ff55" if items_found >= self.items_per_player else "#ffd24d" if items_found > 0 else "#8c8c9a",
                     bg=row_frame["bg"],
                     font=("Segoe UI", 10)
                 ).pack(side="right", padx=5)
@@ -1012,7 +1027,12 @@ class GridGameApp:
 
             if self.game_started:
                 self.countdown_active = False
-                if not self.in_active_game:
+                local_finished = my_id in self.client.finished_players
+                if self.client.match_finished or local_finished:
+                    if (not self.showing_finish_screen
+                            or self.finish_screen_match_complete != self.client.match_finished):
+                        self.show_game_finished_screen(self.client.match_finished)
+                elif not self.in_active_game or self.showing_finish_screen:
                     self.start_client_active_game_screen()
                 else:
                     self.update_client_ui_stats()
@@ -1036,6 +1056,7 @@ class GridGameApp:
 
     def start_client_active_game_screen(self):
         self.in_active_game = True
+        self.showing_finish_screen = False
         if not hasattr(self, "client_cell_arrows"):
             self.client_cell_arrows = {}   # frozen (r,c) -> arrow char
         self.selected_powerup_slot = None
@@ -1077,7 +1098,7 @@ class GridGameApp:
 
         self.lbl_items = tk.Label(
             self.header, 
-            text="ITEMS: 0/3", 
+            text=f"ITEMS: 0/{self.items_per_player}",
             fg="#55ff55", 
             bg="#1a1a24", 
             font=self.score_font
@@ -1175,6 +1196,49 @@ class GridGameApp:
         self.update_client_ui_stats()
         self.draw_elements()
 
+    def show_game_finished_screen(self, match_complete):
+        self.in_active_game = True
+        self.showing_finish_screen = True
+        self.finish_screen_match_complete = match_complete
+        self.qte_active = False
+        self.clear_screen()
+
+        self.current_frame = tk.Frame(self.root, bg="#121214")
+        self.current_frame.pack(fill="both", expand=True)
+        panel = tk.Frame(self.current_frame, bg="#1a1a24", bd=1, relief="solid")
+        panel.place(relx=0.5, rely=0.46, anchor="center", width=560, height=390)
+
+        finished = self.my_player_id in self.client.finished_players
+        title = "GAME FINISHED" if finished else "MATCH COMPLETE"
+        tk.Label(panel, text=title, fg="#55ff55" if finished else "#ffd24d",
+                 bg="#1a1a24", font=("Segoe UI", 26, "bold")).pack(pady=(38, 12))
+
+        if finished:
+            rank = self.client.finished_players.index(self.my_player_id) + 1
+            detail = f"You finished in position {rank}."
+        else:
+            detail = "The required number of players completed the task."
+        tk.Label(panel, text=detail, fg="#ffffff", bg="#1a1a24",
+                 font=("Segoe UI", 14, "bold")).pack(pady=8)
+
+        player = self.players.get(self.my_player_id, {})
+        collected = len(self.per_player_data.get(self.my_player_id, {}).get("collected", {}))
+        tk.Label(panel, text=f"Items: {collected}/{self.client.items_per_player}   Moves: {player.get('moves', self.moves)}",
+                 fg="#00d2ff", bg="#1a1a24", font=("Segoe UI", 12)).pack(pady=8)
+
+        status_text = (
+            f"Final finishers: {len(self.client.finished_players)}/{self.client.finish_target}"
+            if match_complete else
+            f"Waiting for finishers: {len(self.client.finished_players)}/{self.client.finish_target}"
+        )
+        tk.Label(panel, text=status_text, fg="#8c8c9a", bg="#1a1a24",
+                 font=("Segoe UI", 11)).pack(pady=12)
+
+        tk.Button(panel, text="RETURN TO TITLE", command=self.show_title_screen,
+                  bg="#00d2ff", fg="#121214", activebackground="#00a3cc",
+                  activeforeground="#121214", font=self.button_font, bd=0,
+                  padx=24, pady=10, cursor="hand2").pack(pady=22)
+
     def update_client_ui_stats(self):
         if not self.in_active_game or not self.my_player_id:
             return
@@ -1192,7 +1256,7 @@ class GridGameApp:
         if hasattr(self, 'lbl_items') and self.my_player_id in self.per_player_data:
             my_data = self.per_player_data[self.my_player_id]
             found = len(my_data.get("collected", {}))
-            self.lbl_items.config(text=f"ITEMS: {found}/3")
+            self.lbl_items.config(text=f"ITEMS: {found}/{self.items_per_player}")
 
         # Lock button always available (gold)
         if hasattr(self, 'btn_lock'):
@@ -1437,7 +1501,7 @@ class GridGameApp:
 
         self.lbl_items = tk.Label(
             self.header, 
-            text="ITEMS: 0/3", 
+            text=f"ITEMS: 0/{self.items_per_player}",
             fg="#55ff55", 
             bg="#1a1a24", 
             font=self.score_font
@@ -1564,6 +1628,13 @@ class GridGameApp:
         for i in range(GRID_ROWS + 1):
             y = i * CELL_SIZE
             self.canvas.create_line(0, y, CANVAS_WIDTH, y, fill="#2d2d37", width=1, tags="grid_line")
+
+    def visible_map_players(self):
+        """Return active characters visible on a player's map."""
+        if not self.client:
+            return self.players
+        finished = set(self.client.finished_players)
+        return {p_id: player for p_id, player in self.players.items() if p_id not in finished}
 
     def draw_elements(self):
         if not self.in_active_game and not self.my_player_id == "solo":
@@ -1717,7 +1788,10 @@ class GridGameApp:
                     lbl_title.config(text="PLAYER " + str(p_id) + " (" + color_name + ")", fg=p_color)
                     moves = p_info.get("moves", 0)
                     items_found = len(collected)
-                    lbl_stats.config(text="Moves: " + str(moves) + " | Items: " + str(items_found) + "/3")
+                    lbl_stats.config(
+                        text="Moves: " + str(moves) + " | Items: "
+                        + str(items_found) + "/" + str(self.items_per_player)
+                    )
             return
 
         self.canvas.delete("visited_element")
@@ -1753,7 +1827,7 @@ class GridGameApp:
             self._draw_map_powerups()
 
         # 2. Players
-        for p_id, p in self.players.items():
+        for p_id, p in self.visible_map_players().items():
             r = p["r"]
             c = p["c"]
             color = p["color"]
@@ -1857,6 +1931,28 @@ class GridGameApp:
                 text="Press corresponding Arrow / WASD keys to unlock",
                 fill="#8c8c9a", font=("Segoe UI", 9), tags="qte_element"
             )
+            self.canvas.create_rectangle(
+                x2 - 34, y1 + 8, x2 - 8, y1 + 34,
+                fill="#2d2d37", outline="#ff4d4d", width=1,
+                tags=("qte_element", "qte_cancel")
+            )
+            self.canvas.create_text(
+                x2 - 21, y1 + 21, text="X", fill="#ff4d4d",
+                font=("Segoe UI", 10, "bold"),
+                tags=("qte_element", "qte_cancel")
+            )
+            self.canvas.tag_bind("qte_cancel", "<Button-1>", lambda e: self.cancel_qte())
+
+    def cancel_qte(self):
+        if not self.qte_active:
+            return
+        self.qte_active = False
+        self.qte_sequence = []
+        self.qte_progress = 0
+        self.qte_target_move = (0, 0)
+        play_sound("click")
+        if hasattr(self, "canvas") and self.canvas.winfo_exists():
+            self.draw_elements()
 
     def move_player(self, dr, dc):
         if not self.in_game:
@@ -2097,9 +2193,9 @@ class GridGameApp:
                     del self.solo_item_keys[pos]
                 self.collected_item_cells[pos] = self.players["solo"]["color"]
                 play_sound("collect")
-                count = 3 - len(self.hidden_items)
+                count = self.items_per_player - len(self.hidden_items)
                 if hasattr(self, 'lbl_items'):
-                    self.lbl_items.config(text=f"ITEMS: {count}/3")
+                    self.lbl_items.config(text=f"ITEMS: {count}/{self.items_per_player}")
                 self.draw_elements()
                 return True
             else:
@@ -2179,6 +2275,8 @@ class GridGameApp:
         for owner_id, data in self.per_player_data.items():
             color = self.players.get(owner_id, {}).get("color", "#888888")
             for r, c in data.get("items", set()):
+                if (r, c) not in my_visited:
+                    continue
                 if owner_id == self.my_player_id and (r, c) in my_visited:
                     continue
                 margin = 13
@@ -2200,7 +2298,10 @@ class GridGameApp:
         """Draw all uncollected multiplayer powerups as shared map objects."""
         if not self.client:
             return
+        my_visited = self.client.get_my_visited()
         for (r, c), powerup_id in self.client.map_powerups.items():
+            if (r, c) not in my_visited:
+                continue
             meta = POWERUP_META.get(powerup_id, {})
             cx = c * CELL_SIZE + CELL_SIZE // 2
             cy = r * CELL_SIZE + CELL_SIZE // 2

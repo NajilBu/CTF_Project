@@ -152,7 +152,6 @@ class GridServer:
             return False
 
     def _accept_connections(self):
-        player_counter = 0
         while self.server_running:
             try:
                 conn, addr = self.server_socket.accept()
@@ -167,8 +166,11 @@ class GridServer:
                     pass
                 continue
 
-            player_counter += 1
-            p_id = player_counter
+            # Reuse the lowest available lobby slot after a player disconnects.
+            p_id = next(
+                slot for slot in range(1, self.max_players + 1)
+                if slot not in self.clients
+            )
             color = COLORS[(p_id - 1) % len(COLORS)]
 
             # Ensure unique spawn position for players
@@ -238,7 +240,8 @@ class GridServer:
         except Exception:
             pass
         for d in (self.clients, self.players,
-                  self.player_visited, self.player_items, self.player_collected, self.player_item_keys):
+                  self.player_visited, self.player_items, self.player_collected,
+                  self.player_item_keys, self.player_powerups):
             if p_id in d:
                 del d[p_id]
 

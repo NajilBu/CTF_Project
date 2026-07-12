@@ -873,7 +873,7 @@ class GridGameApp:
         self.client = GridClient(
             host_ip=host_ip,
             port=5555,
-            on_init=lambda p_id: self.root.after(0, self.on_client_init),
+            on_init=lambda p_id: self.root.after(0, self.on_client_init, p_id),
             on_state_update=lambda: self.root.after(0, self.on_client_state_update),
             on_disconnect=lambda: self.root.after(0, self.on_client_disconnect),
             on_lobby_full=lambda: self.root.after(0, self.on_client_lobby_full),

@@ -19,6 +19,7 @@ class GridClient:
         self.client_running = False
         self.my_player_id = None
         self.game_started = False
+        self.countdown = 0
 
         self.players = {}        # p_id -> {"r", "c", "color", "ip"}
         self.per_player_data = {}  # p_id -> {"visited": set, "items": set, "collected": dict}
@@ -88,6 +89,7 @@ class GridClient:
                         players_raw = msg["players"]
                         self.players = {int(k): v for k, v in players_raw.items()}
                         self.game_started = msg.get("game_started", False)
+                        self.countdown = msg.get("countdown", 0)
 
                         # Parse map-level powerup positions (hidden pickups remaining on map)
                         self.map_powerups = {

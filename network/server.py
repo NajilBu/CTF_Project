@@ -41,6 +41,8 @@ class GridServer:
         self.server_socket = None
         self.server_running = False
         self.game_started = False
+        self.countdown = 0
+        self.countdown_active = False
 
         self.clients = {}    # p_id -> socket
         self.players = {}    # p_id -> {"r", "c", "color", "ip"}
@@ -72,6 +74,7 @@ class GridServer:
             "players": len(self.players),
             "max_players": self.max_players,
             "game_started": self.game_started,
+            "countdown": self.countdown,
         }
 
     # ------------------------------------------------------------------
@@ -506,7 +509,8 @@ class GridServer:
             "finish_target": self.finish_target,
             "match_finished": self.match_finished,
             "difficulty": self.difficulty,
-            "items_per_player": self.items_per_player
+            "items_per_player": self.items_per_player,
+            "countdown": self.countdown,
         }
 
     def broadcast_state(self):
@@ -519,6 +523,8 @@ class GridServer:
 
     # ------------------------------------------------------------------
     def start_game(self, difficulty="easy"):
+        self.countdown         = 0
+        self.countdown_active  = False
         self.difficulty        = difficulty
         self.items_per_player  = 4 if difficulty == "hard" else 3
         self.game_started      = True
@@ -533,6 +539,29 @@ class GridServer:
             self.start_periodic_spawner()
         if difficulty == "hard":
             self.start_cell_close_timer()
+
+    def begin_countdown(self, difficulty="easy", seconds=3):
+        """Broadcast a synchronized lobby countdown, then start the match."""
+        if self.game_started or self.countdown_active:
+            return
+        self.difficulty = difficulty
+        self.items_per_player = 4 if difficulty == "hard" else 3
+        self.countdown_active = True
+        self.countdown = max(1, int(seconds))
+        self.broadcast_state()
+
+        def tick():
+            while self.server_running and self.countdown_active and self.countdown > 0:
+                time.sleep(1)
+                self.countdown -= 1
+                if self.countdown > 0:
+                    self.broadcast_state()
+            if self.server_running and self.countdown_active:
+                self.start_game(self.difficulty)
+                if self.on_game_update:
+                    self.on_game_update()
+
+        threading.Thread(target=tick, daemon=True).start()
 
     def reset_game(self):
         for p_id in list(self.players.keys()):
@@ -594,6 +623,8 @@ class GridServer:
 
     def stop(self):
         self.server_running = False
+        self.countdown_active = False
+        self.countdown = 0
         self.spawner_active = False
         self.discovery.stop()
         if self.server_socket:

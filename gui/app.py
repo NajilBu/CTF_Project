@@ -152,39 +152,62 @@ class GridGameApp:
         self.cleanup_network()
         self.clear_screen()
 
-        # Title Frame
-        self.current_frame = tk.Frame(self.root, bg="#121214")
+        self.countdown_active = False
+        self.current_frame = tk.Frame(self.root, bg="#090d14")
         self.current_frame.pack(fill="both", expand=True)
 
-        spacer = tk.Label(self.current_frame, text="", bg="#121214", height=4)
-        spacer.pack()
+        backdrop = tk.Canvas(self.current_frame, bg="#090d14", highlightthickness=0)
+        backdrop.place(relx=0, rely=0, relwidth=1, relheight=1)
 
-        lbl_title = tk.Label(
-            self.current_frame,
-            text="GRID EXPLORER",
-            fg="#00d2ff",
-            bg="#121214",
-            font=self.title_font
-        )
-        lbl_title.pack(pady=5)
+        def draw_backdrop(event=None):
+            backdrop.delete("menu_art")
+            w, h = max(backdrop.winfo_width(), 900), max(backdrop.winfo_height(), 600)
+            for x in range(0, w, 54):
+                backdrop.create_line(x, 0, x, h, fill="#101c29", tags="menu_art")
+            for y in range(0, h, 54):
+                backdrop.create_line(0, y, w, y, fill="#101c29", tags="menu_art")
+            for x, y in ((90, 110), (w-120, 160), (150, h-120), (w-180, h-110)):
+                backdrop.create_oval(x-5, y-5, x+5, y+5, fill="#00d2ff", outline="", tags="menu_art")
+                backdrop.create_line(x, y, w//2, h//2, fill="#12354a", dash=(4, 8), tags="menu_art")
+            backdrop.create_text(w-80, 45, text="SECURE LINK  //  ONLINE", fill="#55ff55",
+                                 anchor="e", font=("Consolas", 10, "bold"), tags="menu_art")
+            backdrop.create_text(38, h-35, text="CTF GRID NETWORK  •  PORT 5555  •  ENCRYPTED",
+                                 fill="#385064", anchor="w", font=("Consolas", 9), tags="menu_art")
+        backdrop.bind("<Configure>", draw_backdrop)
 
-        lbl_sub = tk.Label(
-            self.current_frame,
-            text="Cooperative coordinate grids and client networking.",
-            fg="#8c8c9a",
-            bg="#121214",
-            font=self.subtitle_font
-        )
-        lbl_sub.pack(pady=(0, 40))
+        shell = tk.Frame(self.current_frame, bg="#0d141e", highlightthickness=1,
+                         highlightbackground="#1b4055")
+        shell.place(relx=.5, rely=.49, anchor="center", width=760, height=650)
+        tk.Frame(shell, bg="#00d2ff", height=4).pack(fill="x")
+        tk.Label(shell, text="◈  CTF OPERATIONS CONSOLE  /  NODE 01", fg="#5f8197",
+                 bg="#0d141e", font=("Consolas", 9, "bold"), anchor="w").pack(
+                     fill="x", padx=38, pady=(24, 8))
+        tk.Label(shell, text="GRID EXPLORER", fg="#eafaff", bg="#0d141e",
+                 font=("Segoe UI", 38, "bold")).pack()
+        tk.Label(shell, text="CAPTURE  •  DECRYPT  •  DOMINATE", fg="#ffd24d", bg="#0d141e",
+                 font=("Consolas", 12, "bold")).pack(pady=(2, 10))
+        tk.Label(shell, text="Navigate the encrypted grid, recover hidden flags,\nand outmaneuver rival operators.",
+                 fg="#8fa6b6", bg="#0d141e", justify="center",
+                 font=self.subtitle_font).pack(pady=(0, 20))
 
-        # Button box
-        btn_container = tk.Frame(self.current_frame, bg="#121214")
-        btn_container.pack(pady=10)
+        status = tk.Frame(shell, bg="#111d29", highlightthickness=1, highlightbackground="#1e3344")
+        status.pack(fill="x", padx=38, pady=(0, 18))
+        for label, color in (("● NETWORK READY", "#55ff55"), ("⚑ FLAGS ARMED", "#ffd24d"),
+                             ("▦ GRID 20 × 10", "#00d2ff")):
+            tk.Label(status, text=label, fg=color, bg="#111d29",
+                     font=("Consolas", 9, "bold")).pack(side="left", expand=True, pady=10)
+
+        btn_container = tk.Frame(shell, bg="#0d141e")
+        btn_container.pack(fill="x", padx=72)
+
+        def add_hover(button, normal, hover):
+            button.bind("<Enter>", lambda e: button.config(bg=hover))
+            button.bind("<Leave>", lambda e: button.config(bg=normal))
 
         # Solo
         btn_solo = tk.Button(
             btn_container,
-            text="SOLO EXPLORATION",
+            text="01   SOLO INFILTRATION                                      ›",
             command=self.start_solo_game,
             bg="#00d2ff",
             fg="#121214",
@@ -192,16 +215,17 @@ class GridGameApp:
             activeforeground="#121214",
             font=self.button_font,
             bd=0,
-            width=28,
+            anchor="w",
             pady=12,
             cursor="hand2"
         )
-        btn_solo.pack(pady=8)
+        btn_solo.pack(fill="x", pady=6)
+        add_hover(btn_solo, "#00d2ff", "#4ee2ff")
 
         # Host
         btn_host = tk.Button(
             btn_container,
-            text="HOST LOBBY ROOM",
+            text="02   HOST OPERATIONS ROOM                            ›",
             command=self.host_game_action,
             bg="#16293d",
             fg="#00d2ff",
@@ -209,16 +233,17 @@ class GridGameApp:
             activeforeground="#121214",
             font=self.button_font,
             bd=0,
-            width=28,
+            anchor="w",
             pady=12,
             cursor="hand2"
         )
-        btn_host.pack(pady=8)
+        btn_host.pack(fill="x", pady=6)
+        add_hover(btn_host, "#16293d", "#203e59")
 
         # Join
         btn_join = tk.Button(
             btn_container,
-            text="JOIN LOBBY ROOM",
+            text="03   JOIN STRIKE TEAM                                     ›",
             command=self.join_game_action,
             bg="#313143",
             fg="#ffffff",
@@ -226,11 +251,12 @@ class GridGameApp:
             activeforeground="#121214",
             font=self.button_font,
             bd=0,
-            width=28,
+            anchor="w",
             pady=12,
             cursor="hand2"
         )
-        btn_join.pack(pady=8)
+        btn_join.pack(fill="x", pady=6)
+        add_hover(btn_join, "#313143", "#42425b")
 
         # Exit
         btn_exit = tk.Button(
@@ -243,11 +269,12 @@ class GridGameApp:
             activeforeground="#ffffff",
             font=self.button_font,
             bd=0,
-            width=28,
+            width=16,
             pady=10,
             cursor="hand2"
         )
-        btn_exit.pack(pady=20)
+        btn_exit.pack(pady=18)
+        add_hover(btn_exit, "#212128", "#4b252d")
 
     # ------------------ HOST LOBBY LOGIC ------------------
 
@@ -452,6 +479,9 @@ class GridGameApp:
 
     def on_server_game_update(self):
         if self.server:
+            if self.server.game_started and not self.in_active_game:
+                self.launch_host_active_game_screen()
+                return
             self.players = self.server.players
             # Build per_player_data from server's per-player dicts
             self.per_player_data = {}
@@ -473,10 +503,47 @@ class GridGameApp:
         self.difficulty       = diff
         self.items_per_player = 4 if diff == "hard" else 3
 
+        self.countdown_active = True
+        self.btn_start.config(state="disabled")
+        if hasattr(self, "btn_demo_start"):
+            self.btn_demo_start.config(state="disabled")
+        self.server.begin_countdown(diff, 3)
+        self.show_lobby_countdown(3, is_host=True)
+        self.root.after(1000, lambda: self.countdown_active and self.show_lobby_countdown(2, is_host=True))
+        self.root.after(2000, lambda: self.countdown_active and self.show_lobby_countdown(1, is_host=True))
+
+    def show_lobby_countdown(self, count, is_host=False):
+        """Display the synchronized deployment countdown over the lobby."""
+        if not self.current_frame or not self.current_frame.winfo_exists():
+            return
+        overlay = getattr(self, "countdown_overlay", None)
+        if not overlay or not overlay.winfo_exists():
+            self.countdown_overlay = tk.Frame(self.current_frame, bg="#08111a",
+                                              highlightthickness=2,
+                                              highlightbackground="#00d2ff")
+            self.countdown_overlay.place(relx=.5, rely=.52, anchor="center", width=520, height=300)
+            tk.Label(self.countdown_overlay, text="⚑  MISSION DEPLOYMENT",
+                     fg="#ffd24d", bg="#08111a",
+                     font=("Consolas", 13, "bold")).pack(pady=(28, 8))
+            tk.Label(self.countdown_overlay,
+                     text="All operators ready. Synchronizing grid access...",
+                     fg="#8fa6b6", bg="#08111a", font=self.hint_font).pack()
+            self.countdown_number = tk.Label(self.countdown_overlay, text="",
+                                             fg="#00d2ff", bg="#08111a",
+                                             font=("Segoe UI", 82, "bold"))
+            self.countdown_number.pack(pady=(2, 0))
+            tk.Label(self.countdown_overlay, text="HOLD POSITION",
+                     fg="#55ff55", bg="#08111a",
+                     font=("Consolas", 11, "bold")).pack()
+        self.countdown_number.config(text=str(count) if count > 0 else "GO")
+        if is_host and hasattr(self, "lbl_host_status"):
+            self.lbl_host_status.config(text=f"DEPLOYING OPERATORS IN {count}...")
+
+    def launch_host_active_game_screen(self):
         self.game_started = True
         self.in_active_game = True
+        self.countdown_active = False
 
-        self.server.start_game(diff)
         self.players = self.server.players
         self.per_player_data = {}
         for p_id in self.server.players:
@@ -927,6 +994,10 @@ class GridGameApp:
             self.players = self.client.players
             self.per_player_data = self.client.per_player_data
             self.game_started = self.client.game_started
+            countdown = getattr(self.client, "countdown", 0)
+            if countdown > 0 and not self.game_started:
+                self.countdown_active = True
+                self.show_lobby_countdown(countdown)
 
             # Detect server reset: my visited shrunk back to 1
             my_visited = self.client.get_my_visited()
@@ -955,6 +1026,7 @@ class GridGameApp:
                         self.client_cell_arrows[cell] = arrow
 
             if self.game_started:
+                self.countdown_active = False
                 local_finished = my_id in self.client.finished_players
                 if self.client.match_finished or local_finished:
                     if (not self.showing_finish_screen

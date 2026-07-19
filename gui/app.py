@@ -412,6 +412,15 @@ class GridGameApp:
                 self.btn_ready.config(text="READY", bg="#55ff55", fg="#121214")
             self.client.send_team(team_id, role)
 
+    def neutral_duo_action(self):
+        if not self.is_client or not self.my_player_id:
+            return
+        mine = self.players.get(self.my_player_id, {})
+        if mine.get("team") is None:
+            self.edit_profile_action()
+        else:
+            self.join_duo_team(0)
+
     def build_lobby_slots_ui(self):
         if hasattr(self, 'lobby_body_frame') and self.lobby_body_frame:
             try:
@@ -428,6 +437,9 @@ class GridGameApp:
         self.team_join_buttons = {}
         self.team_title_labels = {}
         self.team_role_title_labels = {}
+        self.team_color_swatches = {}
+        self.team_color_value_labels = {}
+        self.neutral_click_widgets = []
         if self.lobby_layout_mode == GAME_MODE_DUO:
             self.build_duo_team_picker_ui()
             self.slot_status_labels = []
@@ -498,37 +510,52 @@ class GridGameApp:
 
         for team_id in range(1, self.duo_team_count() + 1):
             color = self.duo_team_color(team_id)
-            card = tk.Frame(row, bg="#1a1a24", bd=1, relief="solid", width=236, height=146)
-            card.pack(side="left", padx=4)
+            card = tk.Frame(row, bg="#1a1a24", bd=1, relief="solid", width=310, height=190)
+            card.pack(side="left", padx=8)
             card.pack_propagate(False)
-            team_title = tk.Label(card, text=f"TEAM {team_id}", fg=color, bg="#1a1a24",
-                                  font=("Segoe UI", 9, "bold"))
-            team_title.pack(anchor="w", padx=10, pady=(8, 2))
+
+            team_header = tk.Frame(card, bg="#1a1a24")
+            team_header.pack(fill="x", padx=10, pady=(8, 2))
+            team_title = tk.Label(team_header, text=f"TEAM {team_id}", fg=color, bg="#1a1a24",
+                                  font=("Segoe UI", 11, "bold"))
+            team_title.pack(side="left")
             self.team_title_labels[team_id] = team_title
+            swatch = tk.Label(
+                team_header, text=" ", bg=color, width=2,
+                highlightthickness=1, highlightbackground="#d7d7df"
+            )
+            swatch.pack(side="right", padx=(6, 0))
+            self.team_color_swatches[team_id] = swatch
+            color_value = tk.Label(
+                team_header, text=color.upper(), fg=color, bg="#1a1a24",
+                font=("Segoe UI", 8, "bold")
+            )
+            color_value.pack(side="right")
+            self.team_color_value_labels[team_id] = color_value
 
             role_row = tk.Frame(card, bg="#1a1a24")
-            role_row.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+            role_row.pack(fill="both", expand=True, padx=10, pady=(8, 12))
             for role, label_text in ((ROLE_DECRYPT, "DECRYPT"), (ROLE_POWERUPS, "POWERUPS")):
                 role_box = tk.Frame(
                     role_row, bg="#212128", bd=1, relief="solid",
                     highlightthickness=1, highlightbackground="#313143",
-                    width=104, height=94,
+                    width=136, height=128,
                 )
-                role_box.pack(side="left", fill="both", expand=True, padx=3)
+                role_box.pack(side="left", fill="both", expand=True, padx=5)
                 role_box.pack_propagate(False)
 
                 title = tk.Label(
                     role_box, text=label_text, fg=color, bg="#212128",
-                    font=("Segoe UI", 8, "bold")
+                    font=("Segoe UI", 9, "bold")
                 )
-                title.pack(anchor="w", padx=8, pady=(6, 1))
+                title.pack(anchor="w", padx=10, pady=(8, 3))
                 self.team_role_title_labels[(team_id, role)] = title
                 occupant = tk.Label(
                     role_box, text="open", fg="#d7d7df", bg="#212128",
-                    font=("Segoe UI", 8), anchor="w", justify="left",
-                    wraplength=92,
+                    font=("Segoe UI", 9), anchor="w", justify="left",
+                    wraplength=118,
                 )
-                occupant.pack(anchor="w", padx=8)
+                occupant.pack(anchor="w", padx=10)
                 self.team_status_labels[(team_id, role)] = occupant
 
                 if self.is_client:
@@ -536,10 +563,10 @@ class GridGameApp:
                         role_box, text="SELECT",
                         command=lambda team=team_id, selected_role=role: self.join_duo_team(team, selected_role),
                         bg="#313143", fg="#ffffff", activebackground=color,
-                        activeforeground="#121214", bd=0, font=("Segoe UI", 7, "bold"),
+                        activeforeground="#121214", bd=0, font=("Segoe UI", 8, "bold"),
                         cursor="hand2",
                     )
-                    btn.pack(anchor="e", padx=7, pady=(3, 0))
+                    btn.pack(anchor="e", padx=10, pady=(10, 0))
                     for widget in (role_box, title, occupant):
                         widget.bind(
                             "<Button-1>",
@@ -552,19 +579,32 @@ class GridGameApp:
             highlightbackground="#2d2d37", highlightthickness=1,
         )
         neutral_panel.pack(fill="both", expand=True, padx=8, pady=(2, 0))
+        if self.is_client:
+            neutral_panel.config(cursor="hand2")
+            neutral_panel.bind("<Button-1>", lambda e: self.neutral_duo_action())
+            self.neutral_click_widgets.append(neutral_panel)
 
         neutral_header = tk.Frame(neutral_panel, bg="#15151e")
         neutral_header.pack(fill="x")
-        tk.Label(
+        if self.is_client:
+            neutral_header.config(cursor="hand2")
+            neutral_header.bind("<Button-1>", lambda e: self.neutral_duo_action())
+            self.neutral_click_widgets.append(neutral_header)
+        neutral_title = tk.Label(
             neutral_header,
             text="NEUTRAL PLAYERS",
             fg="#8c8c9a",
             bg="#15151e",
             font=("Segoe UI", 10, "bold")
-        ).pack(side="left", padx=12, pady=8)
+        )
+        neutral_title.pack(side="left", padx=12, pady=8)
+        if self.is_client:
+            neutral_title.config(cursor="hand2")
+            neutral_title.bind("<Button-1>", lambda e: self.neutral_duo_action())
+            self.neutral_click_widgets.append(neutral_title)
         if self.is_client:
             btn = tk.Button(
-                neutral_header, text="MOVE TO NEUTRAL", command=lambda: self.join_duo_team(0),
+                neutral_header, text="MOVE TO NEUTRAL", command=self.neutral_duo_action,
                 bg="#313143", fg="#ffffff", activebackground="#42425b",
                 activeforeground="#ffffff", bd=0, font=("Segoe UI", 8, "bold"),
                 cursor="hand2", padx=12, pady=4
@@ -583,6 +623,10 @@ class GridGameApp:
             wraplength=720,
         )
         self.team_status_labels[0].pack(fill="both", expand=True, padx=14, pady=12)
+        if self.is_client:
+            self.team_status_labels[0].config(cursor="hand2")
+            self.team_status_labels[0].bind("<Button-1>", lambda e: self.neutral_duo_action())
+            self.neutral_click_widgets.append(self.team_status_labels[0])
 
     def build_lobby_chat_ui(self):
         if hasattr(self, "chat_frame") and self.chat_frame:
@@ -763,6 +807,13 @@ class GridGameApp:
             team_color = self.duo_team_color(team_id)
             if team_id in getattr(self, "team_title_labels", {}):
                 self.team_title_labels[team_id].config(fg=team_color)
+            if team_id in getattr(self, "team_color_swatches", {}):
+                self.team_color_swatches[team_id].config(bg=team_color)
+            if team_id in getattr(self, "team_color_value_labels", {}):
+                self.team_color_value_labels[team_id].config(
+                    text=team_color.upper(),
+                    fg=team_color,
+                )
             members = [
                 (p_id, player) for p_id, player in sorted(current_players.items())
                 if player.get("team") == team_id
@@ -807,10 +858,11 @@ class GridGameApp:
         if 0 in self.team_join_buttons:
             is_neutral = my_team is None
             self.team_join_buttons[0].config(
-                text="YOU ARE NEUTRAL" if is_neutral else "MOVE TO NEUTRAL",
-                state="disabled" if is_neutral else "normal",
-                bg="#8c8c9a" if is_neutral else "#313143",
+                text="EDIT NAME" if is_neutral else "MOVE TO NEUTRAL",
+                state="normal",
+                bg="#00d2ff" if is_neutral else "#313143",
                 fg="#121214" if is_neutral else "#ffffff",
+                activebackground="#00a3cc" if is_neutral else "#42425b",
             )
 
     def lobby_can_start(self, current_players):
@@ -926,6 +978,8 @@ class GridGameApp:
                 if hasattr(self, "btn_profile"):
                     if mine.get("role") == ROLE_DECRYPT and mine.get("team") is not None:
                         self.btn_profile.config(text="EDIT TEAM COLOR")
+                    elif mine.get("team") is None:
+                        self.btn_profile.config(text="EDIT NAME")
                     else:
                         self.btn_profile.config(text="EDIT PROFILE")
             elif hasattr(self, "lbl_status_desc"):
@@ -1487,9 +1541,20 @@ class GridGameApp:
                 for other_team in range(1, self.duo_team_count() + 1)
                 if other_team != team_id
             }
-            title = "DUO TEAM PROFILE"
+            title = "DUO TEAM COLOR"
             color_label = "TEAM COLOR"
             save_label = "SAVE TEAM"
+            allow_name = False
+        elif mode == GAME_MODE_DUO and player.get("team") is None:
+            profile_color = player.get(
+                "profile_color",
+                player.get("color", COLORS[(self.my_player_id - 1) % len(COLORS)])
+            )
+            unavailable_colors = set()
+            title = "NEUTRAL PLAYER NAME"
+            color_label = "PLAYER COLOR"
+            save_label = "SAVE NAME"
+            allow_name = True
         else:
             profile_color = player.get(
                 "profile_color",
@@ -1503,6 +1568,7 @@ class GridGameApp:
             title = "PLAYER PROFILE"
             color_label = "PLAYER COLOR"
             save_label = "SAVE PROFILE"
+            allow_name = True
         result = PlayerProfileDialog(
             self.root, self.button_font,
             player.get("name", f"Player {self.my_player_id}"),
@@ -1513,6 +1579,7 @@ class GridGameApp:
             color_label=color_label,
             save_label=save_label,
             allow_color=allow_color,
+            allow_name=allow_name,
         ).show()
         if result:
             self.preferred_name = result[0]

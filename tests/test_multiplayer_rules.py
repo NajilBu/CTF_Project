@@ -223,6 +223,26 @@ class MultiplayerRulesTest(unittest.TestCase):
         server.players[2]["ready"] = True
         self.assertTrue(server.can_start_game())
 
+    def test_duo_player_can_return_to_neutral_and_rename_there(self):
+        server = self.make_server()
+        sent = []
+        server._send_to = lambda p_id, msg: sent.append((p_id, msg))
+        server.game_started = False
+        server.set_game_mode(GAME_MODE_DUO)
+        server.process_client_team(1, 1, ROLE_DECRYPT)
+        server.players[1]["ready"] = True
+
+        self.assertTrue(server.process_client_team(1, 0))
+        self.assertIsNone(server.players[1]["team"])
+        self.assertEqual(server.players[1]["role"], ROLE_NEUTRAL)
+        self.assertFalse(server.players[1]["ready"])
+
+        server.process_client_profile(1, "Neutral Name", server.players[1]["color"])
+
+        self.assertTrue(sent[-1][1]["success"])
+        self.assertEqual(server.players[1]["name"], "Neutral Name")
+        self.assertFalse(server.team_colors)
+
     def test_duo_mode_uses_team_color_instead_of_personal_color(self):
         server = self.make_server()
         server.game_mode = GAME_MODE_DUO
@@ -243,6 +263,7 @@ class MultiplayerRulesTest(unittest.TestCase):
         server._send_to = lambda p_id, msg: sent.append((p_id, msg))
         server.game_mode = GAME_MODE_DUO
         server.game_started = False
+        server.players[1]["name"] = "Decryptor"
         server.players[1]["team"] = 1
         server.players[1]["role"] = ROLE_DECRYPT
         server.players[2]["team"] = 1
@@ -252,7 +273,9 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         self.assertTrue(sent[-1][1]["success"])
         self.assertEqual(server.team_colors[1], "#123456")
+        self.assertEqual(server.players[1]["name"], "Decryptor")
         self.assertEqual(server.players[1]["color"], "#00d2ff")
+        self.assertFalse(server.chat_history)
         state = server._build_state(1)
         self.assertEqual(state["team_colors"]["1"], "#123456")
         self.assertEqual(state["players"]["1"]["color"], "#123456")

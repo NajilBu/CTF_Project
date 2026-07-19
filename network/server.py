@@ -585,7 +585,12 @@ class GridServer:
 
         clean_name = " ".join(str(name).split())[:16]
         clean_color = str(color).strip().lower()
-        if not clean_name:
+        is_duo_decryptor = (
+            self.game_mode == GAME_MODE_DUO
+            and self.players[p_id].get("role") == ROLE_DECRYPT
+            and self.players[p_id].get("team") is not None
+        )
+        if not clean_name and not is_duo_decryptor:
             self._send_to(p_id, {
                 "type": "profile_result", "success": False,
                 "reason": "Player name cannot be blank.",
@@ -597,13 +602,10 @@ class GridServer:
                 "reason": "Choose a valid color.",
             })
             return
-        is_duo_decryptor = (
-            self.game_mode == GAME_MODE_DUO
-            and self.players[p_id].get("role") == ROLE_DECRYPT
-            and self.players[p_id].get("team") is not None
-        )
         with self._color_lock:
             old_name = self.players[p_id].get("name", f"Player {p_id}")
+            if is_duo_decryptor:
+                clean_name = old_name
             team_id = self.players[p_id].get("team")
 
             if is_duo_decryptor:

@@ -9,7 +9,7 @@ class PlayerProfileDialog:
     def __init__(self, parent, button_font, name, color, preset_colors,
                  unavailable_colors=None, title="PLAYER PROFILE",
                  color_label="PLAYER COLOR", save_label="SAVE PROFILE",
-                 allow_color=True):
+                 allow_color=True, allow_name=True):
         self.parent = parent
         self.button_font = button_font
         self.name = name
@@ -22,6 +22,7 @@ class PlayerProfileDialog:
         self.color_label = color_label
         self.save_label = save_label
         self.allow_color = allow_color
+        self.allow_name = allow_name
 
     def show(self):
         result = {"value": None}
@@ -40,14 +41,21 @@ class PlayerProfileDialog:
 
         tk.Label(dialog, text=self.title, fg="#00d2ff", bg="#121214",
                  font=font.Font(family="Segoe UI", size=16, weight="bold")).pack(pady=(22, 16))
-        tk.Label(dialog, text="DISPLAY NAME", fg="#8c8c9a", bg="#121214",
-                 font=font.Font(family="Segoe UI", size=9, weight="bold")).pack()
-        entry = tk.Entry(dialog, bg="#1a1a24", fg="#ffffff", insertbackground="#ffffff",
-                         justify="center", bd=0,
-                         font=font.Font(family="Segoe UI", size=12))
-        entry.pack(fill="x", padx=55, pady=(5, 18), ipady=8)
-        entry.insert(0, self.name)
-        entry.select_range(0, tk.END)
+        entry = None
+        if self.allow_name:
+            tk.Label(dialog, text="DISPLAY NAME", fg="#8c8c9a", bg="#121214",
+                     font=font.Font(family="Segoe UI", size=9, weight="bold")).pack()
+            entry = tk.Entry(dialog, bg="#1a1a24", fg="#ffffff", insertbackground="#ffffff",
+                             justify="center", bd=0,
+                             font=font.Font(family="Segoe UI", size=12))
+            entry.pack(fill="x", padx=55, pady=(5, 18), ipady=8)
+            entry.insert(0, self.name)
+            entry.select_range(0, tk.END)
+        else:
+            tk.Label(dialog, text="This only changes your duo team's shared color.",
+                     fg="#8c8c9a", bg="#121214",
+                     font=font.Font(family="Segoe UI", size=9),
+                     wraplength=360, justify="center").pack(pady=(0, 18))
 
         color_error = tk.Label(
             dialog, text="", fg="#ff4d4d", bg="#121214",
@@ -96,7 +104,7 @@ class PlayerProfileDialog:
             dialog.destroy()
 
         def save():
-            name = " ".join(entry.get().split())[:16]
+            name = " ".join(entry.get().split())[:16] if self.allow_name else self.name
             if self.allow_color and selected_color.get().lower() in self.unavailable_colors:
                 color_error.config(text="That color is already used.")
             elif name:
@@ -112,10 +120,16 @@ class PlayerProfileDialog:
                   activebackground="#00a3cc", activeforeground="#121214", bd=0,
                   width=15, pady=8, cursor="hand2", font=self.button_font).pack(side="right")
 
-        entry.bind("<Return>", lambda e: save())
-        entry.bind("<Escape>", lambda e: close())
+        dialog.bind("<Return>", lambda e: save())
+        dialog.bind("<Escape>", lambda e: close())
+        if entry:
+            entry.bind("<Return>", lambda e: save())
+            entry.bind("<Escape>", lambda e: close())
         dialog.protocol("WM_DELETE_WINDOW", close)
-        entry.focus_set()
+        if entry:
+            entry.focus_set()
+        else:
+            dialog.focus_set()
         self.parent.wait_window(dialog)
         return result["value"]
 

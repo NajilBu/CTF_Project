@@ -66,6 +66,7 @@ class GridGameApp:
         self.showing_finish_screen = False
         self.finish_screen_match_complete = False
         self.viewing_postgame_lobby = False
+        self.blocked_from_joining = False
 
         # Network Game States
         self.is_host = False
@@ -147,6 +148,7 @@ class GridGameApp:
         self.showing_finish_screen = False
         self.finish_screen_match_complete = False
         self.viewing_postgame_lobby = False
+        self.blocked_from_joining = getattr(self, "blocked_from_joining", False)
         self.cleanup_network()
         self.clear_screen()
 
@@ -221,22 +223,25 @@ class GridGameApp:
         add_hover(btn_host, "#16293d", "#203e59")
 
         # Join
+        join_locked = getattr(self, "blocked_from_joining", False)
         btn_join = tk.Button(
             btn_container,
-            text="02   JOIN STRIKE TEAM                                     \u203a",
+            text="02   JOIN LOCKED - OPERATOR ELIMINATED" if join_locked else "02   JOIN STRIKE TEAM                                     \u203a",
             command=self.join_game_action,
-            bg="#313143",
-            fg="#ffffff",
+            bg="#212128" if join_locked else "#313143",
+            fg="#5f5f6e" if join_locked else "#ffffff",
             activebackground="#ffd24d",
             activeforeground="#121214",
             font=self.button_font,
             bd=0,
             anchor="w",
             pady=12,
-            cursor="hand2"
+            cursor="arrow" if join_locked else "hand2",
+            state="disabled" if join_locked else "normal"
         )
         btn_join.pack(fill="x", pady=6)
-        add_hover(btn_join, "#313143", "#42425b")
+        if not join_locked:
+            add_hover(btn_join, "#313143", "#42425b")
 
         btn_profile = tk.Button(
             btn_container,
@@ -1127,6 +1132,9 @@ class GridGameApp:
     # ------------------ CLIENT LOBBY LOGIC ------------------
 
     def join_game_action(self):
+        if getattr(self, "blocked_from_joining", False):
+            messagebox.showwarning("Lobby Locked", "This operator has been eliminated and cannot rejoin the lobby.")
+            return
         play_sound("click")
         host_ip = CustomIPDialog(self.root, self.button_font).show()
         if not host_ip:
@@ -1288,6 +1296,8 @@ class GridGameApp:
             self.players = self.client.players
             self.per_player_data = self.client.per_player_data
             self.game_started = self.client.game_started
+            self.difficulty = getattr(self.client, "difficulty", self.difficulty)
+            self.items_per_player = getattr(self.client, "items_per_player", self.items_per_player)
             countdown = getattr(self.client, "countdown", 0)
             if countdown > 0 and not self.game_started:
                 self.countdown_active = True
@@ -1501,6 +1511,134 @@ class GridGameApp:
         self.draw_elements()
         self.build_ingame_chat_ui()
 
+    def _format_finish_time(self, seconds):
+        if seconds is None:
+            return "--:--"
+        seconds = max(0, int(round(seconds)))
+        return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+    def _rank_color(self, rank):
+        return {1: "#ffd24d", 2: "#cfd3dc", 3: "#cd7f32"}.get(rank, "#8c8c9a")
+
+    def _player_keys_solved(self, p_id):
+        data = self.per_player_data.get(p_id, {})
+        remaining = data.get("items", set())
+        if remaining is not None:
+            return max(0, self.items_per_player - len(remaining))
+        return len(data.get("collected", {}))
+
+    def _display_groups_for_results(self):
+        player_ids = sorted(self.players.keys())
+        if self.difficulty == "medium" and len(player_ids) >= 6:
+            return [
+                ("Group 1", player_ids[0:2], "#00d2ff"),
+                ("Group 2", player_ids[2:4], "#ffd24d"),
+                ("Group 3", player_ids[4:6], "#d800ff"),
+            ]
+        if self.difficulty == "hard" and len(player_ids) >= 4:
+            return [
+                ("Group 1", player_ids[0:2], "#00d2ff"),
+                ("Group 2", player_ids[2:4], "#ff4d4d"),
+            ]
+        return []
+
+    def _build_finish_results(self):
+        finished = list(getattr(self.client, "finished_players", []))
+        finish_times = getattr(self.client, "finish_times", {})
+
+        if self.difficulty in ("medium", "hard"):
+            groups = self._display_groups_for_results()
+            if groups:
+                rows = []
+                for name, members, color in groups:
+                    keys = sum(self._player_keys_solved(p_id) for p_id in members)
+                    goal = self.items_per_player * len(members)
+                    member_times = [finish_times[p_id] for p_id in members if p_id in finish_times]
+                    complete = len(member_times) == len(members)
+                    moves = sum(self.players.get(p_id, {}).get("moves", 0) for p_id in members)
+                    rows.append({
+                        "name": name,
+                        "members": members,
+                        "color": color,
+                        "keys": keys,
+                        "goal": goal,
+                        "moves": moves,
+                        "finish_time": max(member_times) if complete else None,
+                        "sort": (0, max(member_times)) if complete else (1, -keys, moves),
+                    })
+                rows.sort(key=lambda row: row["sort"])
+                winner_limit = 2 if self.difficulty == "medium" else 1
+                for index, row in enumerate(rows, 1):
+                    row["rank"] = index
+                    row["winner"] = index <= winner_limit
+                return rows[:winner_limit], rows[winner_limit:]
+
+        rows = []
+        for p_id, info in self.players.items():
+            keys = self._player_keys_solved(p_id)
+            order = finished.index(p_id) if p_id in finished else 999
+            rows.append({
+                "name": info.get("name", f"Player {p_id}"),
+                "members": [p_id],
+                "color": info.get("color", COLORS[(p_id - 1) % len(COLORS)]),
+                "keys": keys,
+                "goal": self.items_per_player,
+                "moves": info.get("moves", 0),
+                "finish_time": finish_times.get(p_id),
+                "sort": (0, order) if p_id in finished else (1, -keys, info.get("moves", 0)),
+            })
+        rows.sort(key=lambda row: row["sort"])
+        for index, row in enumerate(rows, 1):
+            row["rank"] = index
+            row["winner"] = index <= self.client.finish_target
+        return rows[:self.client.finish_target], rows[self.client.finish_target:]
+
+    def _draw_place_badge(self, parent, rank, size):
+        color = self._rank_color(rank)
+        canvas = tk.Canvas(parent, width=size, height=size, bg="#111d29", highlightthickness=0)
+        canvas.pack(pady=(10, 2))
+        canvas.create_oval(5, 5, size - 5, size - 5, fill="#0d141e", outline=color, width=4)
+        canvas.create_oval(15, 15, size - 15, size - 15, fill="#151b29", outline="#26364a", width=1)
+        canvas.create_text(size // 2, size // 2, text=str(rank), fill=color,
+                           font=("Segoe UI", max(28, size // 2), "bold"))
+
+    def _build_finish_podium_card(self, parent, row, width, height, big=False):
+        frame = tk.Frame(parent, bg="#111d29", highlightbackground=self._rank_color(row["rank"]),
+                         highlightthickness=2, width=width, height=height)
+        frame.pack_propagate(False)
+        self._draw_place_badge(frame, row["rank"], 94 if big else 72)
+        tk.Label(frame, text=row["name"].upper(), fg="#eafaff", bg="#111d29",
+                 font=("Segoe UI", 14 if big else 12, "bold")).pack(pady=(0, 2))
+        tk.Label(frame, text=" / ".join(f"P{p_id}" for p_id in row["members"]),
+                 fg=row["color"], bg="#111d29", font=("Consolas", 10, "bold")).pack()
+        tk.Label(frame, text=f"{row['keys']}/{row['goal']} KEYS", fg="#55ff55",
+                 bg="#111d29", font=("Segoe UI", 11, "bold")).pack(pady=(8, 2))
+        tk.Label(frame, text=f"TIME {self._format_finish_time(row['finish_time'])}  |  MOVES {row['moves']}",
+                 fg="#8fa6b6", bg="#111d29", font=("Segoe UI", 9, "bold")).pack()
+        return frame
+
+    def _build_finish_participant_row(self, parent, row):
+        frame = tk.Frame(parent, bg="#0d141e", height=28)
+        frame.pack(fill="x", pady=2)
+        frame.pack_propagate(False)
+        tk.Label(frame, text=f"#{row['rank']}", fg="#8fa6b6", bg="#0d141e",
+                 font=("Segoe UI", 10, "bold"), width=5).pack(side="left", padx=(10, 4))
+        tk.Label(frame, text=row["name"], fg="#eafaff", bg="#0d141e",
+                 font=("Segoe UI", 10, "bold"), width=18, anchor="w").pack(side="left")
+        tk.Label(frame, text=" / ".join(f"P{p_id}" for p_id in row["members"]),
+                 fg=row["color"], bg="#0d141e", font=("Consolas", 9, "bold"),
+                 width=16, anchor="w").pack(side="left")
+        tk.Label(frame, text=f"{row['keys']}/{row['goal']} KEYS",
+                 fg="#ffd24d" if row["keys"] else "#8c8c9a", bg="#0d141e",
+                 font=("Segoe UI", 9, "bold"), width=12, anchor="e").pack(side="right", padx=(4, 12))
+        tk.Label(frame, text=f"TIME {self._format_finish_time(row['finish_time'])}",
+                 fg="#8fa6b6", bg="#0d141e", font=("Segoe UI", 9),
+                 width=14, anchor="e").pack(side="right")
+
+    def return_loser_to_main_menu(self):
+        self.blocked_from_joining = True
+        self.show_title_screen()
+
     def show_game_finished_screen(self, match_complete):
         self.in_active_game = True
         self.showing_finish_screen = True
@@ -1508,41 +1646,67 @@ class GridGameApp:
         self.qte_active = False
         self.clear_screen()
 
-        self.current_frame = tk.Frame(self.root, bg="#121214")
-        self.current_frame.pack(fill="both", expand=True)
-        panel = tk.Frame(self.current_frame, bg="#1a1a24", bd=1, relief="solid")
-        panel.place(relx=0.5, rely=0.46, anchor="center", width=560, height=390)
-
+        winners, participants = self._build_finish_results()
         finished = self.my_player_id in self.client.finished_players
-        title = "GAME FINISHED" if finished else "MATCH COMPLETE"
-        tk.Label(panel, text=title, fg="#55ff55" if finished else "#ffd24d",
-                 bg="#1a1a24", font=("Segoe UI", 26, "bold")).pack(pady=(38, 12))
+
+        self.current_frame = tk.Frame(self.root, bg="#090d14")
+        self.current_frame.pack(fill="both", expand=True)
+        shell = tk.Frame(self.current_frame, bg="#0d141e", highlightthickness=1,
+                         highlightbackground="#1b4055")
+        shell.place(relx=0.5, rely=0.5, anchor="center", width=1040, height=720)
+        tk.Frame(shell, bg="#00d2ff", height=4).pack(fill="x")
+        tk.Label(shell, text=f"{self.difficulty.upper()} ROUND COMPLETE", fg="#ffd24d",
+                 bg="#0d141e", font=("Consolas", 12, "bold")).pack(pady=(18, 2))
+        tk.Label(shell, text="GRID EXPLORER", fg="#eafaff", bg="#0d141e",
+                 font=("Segoe UI", 34, "bold")).pack()
+        tk.Label(shell, text="FINAL LEADERBOARD  /  KEYS SOLVED  /  FINISH TIME",
+                 fg="#8fa6b6", bg="#0d141e", font=("Consolas", 10, "bold")).pack(pady=(2, 12))
+
+        podium = tk.Frame(shell, bg="#0d141e")
+        podium.pack()
+        if self.difficulty == "easy" and len(winners) >= 3:
+            by_rank = {row["rank"]: row for row in winners}
+            order = [(2, 250, 220, False), (1, 300, 250, True), (3, 250, 220, False)]
+            for col, (rank, width, height, big) in enumerate(order):
+                holder = tk.Frame(podium, bg="#0d141e", width=width, height=height)
+                holder.grid(row=0, column=col, padx=12, sticky="s")
+                holder.grid_propagate(False)
+                if rank in by_rank:
+                    self._build_finish_podium_card(holder, by_rank[rank], width, height, big).pack(side="bottom")
+        else:
+            for col, row in enumerate(winners):
+                width = 300 if row["rank"] == 1 else 270
+                height = 250 if row["rank"] == 1 else 220
+                holder = tk.Frame(podium, bg="#0d141e", width=width, height=height)
+                holder.grid(row=0, column=col, padx=14, sticky="s")
+                holder.grid_propagate(False)
+                self._build_finish_podium_card(holder, row, width, height, row["rank"] == 1).pack(side="bottom")
+
+        list_panel = tk.Frame(shell, bg="#111d29", highlightbackground="#26364a",
+                              highlightthickness=1, width=850, height=142)
+        list_panel.pack(pady=(10, 8))
+        list_panel.pack_propagate(False)
+        tk.Label(list_panel, text="PARTICIPANTS WHO DID NOT WIN", fg="#8fa6b6",
+                 bg="#111d29", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=16, pady=(6, 3))
+        list_body = tk.Frame(list_panel, bg="#111d29")
+        list_body.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+        for row in participants:
+            self._build_finish_participant_row(list_body, row)
 
         if finished:
-            rank = self.client.finished_players.index(self.my_player_id) + 1
-            detail = f"You finished in position {rank}."
+            btn_text = "RETURN TO LOBBY"
+            btn_command = self.show_postgame_lobby
+            btn_bg = "#00d2ff"
+            btn_fg = "#121214"
         else:
-            detail = "The required number of players completed the task."
-        tk.Label(panel, text=detail, fg="#ffffff", bg="#1a1a24",
-                 font=("Segoe UI", 14, "bold")).pack(pady=8)
-
-        player = self.players.get(self.my_player_id, {})
-        collected = len(self.per_player_data.get(self.my_player_id, {}).get("collected", {}))
-        tk.Label(panel, text=f"Items: {collected}/{self.client.items_per_player}   Moves: {player.get('moves', self.moves)}",
-                 fg="#00d2ff", bg="#1a1a24", font=("Segoe UI", 12)).pack(pady=8)
-
-        status_text = (
-            f"Final finishers: {len(self.client.finished_players)}/{self.client.finish_target}"
-            if match_complete else
-            f"Waiting for finishers: {len(self.client.finished_players)}/{self.client.finish_target}"
-        )
-        tk.Label(panel, text=status_text, fg="#8c8c9a", bg="#1a1a24",
-                 font=("Segoe UI", 11)).pack(pady=12)
-
-        tk.Button(panel, text="RETURN TO LOBBY", command=self.show_postgame_lobby,
-                  bg="#00d2ff", fg="#121214", activebackground="#00a3cc",
-                  activeforeground="#121214", font=self.button_font, bd=0,
-                  padx=24, pady=10, cursor="hand2").pack(pady=22)
+            btn_text = "RETURN TO MAIN MENU"
+            btn_command = self.return_loser_to_main_menu
+            btn_bg = "#ff4d4d"
+            btn_fg = "#ffffff"
+        tk.Button(shell, text=btn_text, command=btn_command, bg=btn_bg, fg=btn_fg,
+                  activebackground="#ffd24d", activeforeground="#121214",
+                  font=self.button_font, bd=0, width=28, pady=9,
+                  cursor="hand2").pack(pady=(0, 12))
 
     def show_postgame_lobby(self):
         if not self.client or not self.client.client_running:

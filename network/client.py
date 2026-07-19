@@ -28,6 +28,7 @@ class GridClient:
         self.move_item_targets = set()
         self.chat_history = []
         self.finished_players = []  # p_ids in the order they finished (earliest first)
+        self.finish_times = {}      # p_id -> elapsed seconds from round start
         self.finish_target = 1
         self.match_finished = False
         self.difficulty       = "easy"
@@ -128,6 +129,9 @@ class GridClient:
                             }
 
                         self.finished_players = msg.get("finished_players", [])
+                        self.finish_times = {
+                            int(k): v for k, v in msg.get("finish_times", {}).items()
+                        }
                         self.finish_target     = msg.get("finish_target", 1)
                         self.match_finished    = msg.get("match_finished", False)
                         self.difficulty        = msg.get("difficulty", "easy")
@@ -219,5 +223,6 @@ class GridClient:
             self.client_socket = None
         self.players.clear()
         self.per_player_data.clear()
+        self.finish_times.clear()
         self.move_item_targets.clear()
         self.chat_history.clear()

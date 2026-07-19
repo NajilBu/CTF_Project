@@ -1,9 +1,11 @@
 import unittest
 from unittest.mock import patch
 
+from config import COLORS
 from gui.app import GridGameApp
 from gui.dialogs import LockScreenDialog
-from network.server import GridServer, expected_caesar_answer as expected_server_answer
+from network.server import (GridServer, expected_caesar_answer as expected_server_answer,
+                            make_caesar_clue)
 
 
 class MultiplayerRulesTest(unittest.TestCase):
@@ -85,6 +87,20 @@ class MultiplayerRulesTest(unittest.TestCase):
         self.assertEqual(expected_server_answer(legacy_clue), "ALPHA")
         self.assertEqual(expected_server_answer(encrypt_clue), "DOSKD")
 
+    @patch("network.server.random.choice", return_value=3)
+    @patch("network.server.random.randint", return_value=10)
+    @patch("network.server.random.choices", return_value=list("QXZMTPLKRB"))
+    def test_hard_mode_uses_random_letters_instead_of_a_word(
+            self, _choices, _randint, _choice):
+        clue = make_caesar_clue("hard")
+
+        source, encrypted, shift, mode = clue.split("|")
+        self.assertEqual(source, "QXZMTPLKRB")
+        self.assertEqual(len(encrypted), len(source))
+        self.assertEqual(shift, "3")
+        self.assertEqual(mode, "encrypt")
+        self.assertEqual(expected_server_answer(clue), encrypted)
+
     @patch("network.server.play_sound", lambda *_: None)
     def test_hard_mode_unlock_accepts_encrypted_word(self):
         server = self.make_server()
@@ -145,6 +161,17 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         self.assertFalse(sent[-1][1]["success"])
         self.assertIn("already used", sent[-1][1]["reason"])
+
+    def test_default_color_assignment_skips_colors_already_in_use(self):
+        server = self.make_server()
+        server.players[1]["color"] = COLORS[2]
+
+        assigned = server.available_player_color(3)
+
+        self.assertNotIn(
+            assigned.lower(),
+            {player["color"].lower() for player in server.players.values()},
+        )
 
     def test_player_and_host_chat_use_authoritative_identity(self):
         server = self.make_server()

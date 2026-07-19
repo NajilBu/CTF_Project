@@ -23,7 +23,13 @@ _WORDS_EASY   = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "SHIELD", "SYS
 _WORDS_HARD   = ["CRYPTOGRAPHY", "INFILTRATE", "DECRYPTION", "ALGORITHM", "CLASSIFIED", "ENCRYPTION", "OBFUSCATE", "INTERCEPT", "VULNERABLE", "PENETRATE", "FRAMEWORK", "CYBERCRIME"]
 
 def make_caesar_clue(difficulty="easy"):
-    if difficulty in ("medium", "hard"):
+    if difficulty == "hard":
+        # Random letters remove dictionary-word recognition from hard mode.
+        word = "".join(random.choices(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ", k=random.randint(9, 13)
+        ))
+        shift = random.choice(list(range(-13, 0)) + list(range(1, 14)))
+    elif difficulty == "medium":
         word  = random.choice(_WORDS_HARD)
         shift = random.choice(list(range(-13, 0)) + list(range(1, 14)))
     else:
@@ -60,6 +66,7 @@ class GridServer:
 
         self.clients = {}    # p_id -> socket
         self.players = {}    # p_id -> {"r", "c", "color", "ip"}
+        self._color_lock = threading.Lock()
 
         # Per-player state
         self.player_visited   = {}  # p_id -> set of (r, c)
@@ -221,8 +228,6 @@ class GridServer:
                 slot for slot in range(1, self.max_players + 1)
                 if slot not in self.clients
             )
-            color = COLORS[(p_id - 1) % len(COLORS)]
-
             # Ensure unique spawn position for players
             occupied = {(p["r"], p["c"]) for p in self.players.values()}
             r = random.randint(0, GRID_ROWS - 1)
@@ -234,8 +239,12 @@ class GridServer:
                 attempts += 1
 
             self.clients[p_id] = conn
-            self.players[p_id] = {"r": r, "c": c, "color": color, "ip": addr[0], "moves": 0, "ready": False}
-            self.players[p_id]["name"] = f"Player {p_id}"
+            with self._color_lock:
+                color = self.available_player_color(p_id)
+                self.players[p_id] = {
+                    "r": r, "c": c, "color": color, "ip": addr[0],
+                    "moves": 0, "ready": False, "name": f"Player {p_id}",
+                }
             self.player_visited[p_id]   = {(r, c)}
             self.player_items[p_id]     = set()
             self.player_collected[p_id] = {}
@@ -261,6 +270,19 @@ class GridServer:
 
             threading.Thread(target=self._handle_client,
                              args=(p_id, conn), daemon=True).start()
+
+    def available_player_color(self, p_id):
+        """Choose a unique preset color, preferring the lobby slot's normal color."""
+        used_colors = {
+            str(player.get("color", "")).lower()
+            for player in self.players.values()
+        }
+        preferred_index = (p_id - 1) % len(COLORS)
+        ordered_colors = COLORS[preferred_index:] + COLORS[:preferred_index]
+        return next(
+            (color for color in ordered_colors if color.lower() not in used_colors),
+            COLORS[preferred_index],
+        )
 
     def _handle_client(self, p_id, conn):
         buffer = ""
@@ -343,19 +365,20 @@ class GridServer:
                 "reason": "Choose a valid player color.",
             })
             return
-        if any(
-            other_id != p_id and player.get("color", "").lower() == clean_color
-            for other_id, player in self.players.items()
-        ):
-            self._send_to(p_id, {
-                "type": "profile_result", "success": False,
-                "reason": "That color is already used by another player.",
-            })
-            return
+        with self._color_lock:
+            if any(
+                other_id != p_id and player.get("color", "").lower() == clean_color
+                for other_id, player in self.players.items()
+            ):
+                self._send_to(p_id, {
+                    "type": "profile_result", "success": False,
+                    "reason": "That color is already used by another player.",
+                })
+                return
 
-        old_name = self.players[p_id].get("name", f"Player {p_id}")
-        self.players[p_id]["name"] = clean_name
-        self.players[p_id]["color"] = clean_color
+            old_name = self.players[p_id].get("name", f"Player {p_id}")
+            self.players[p_id]["name"] = clean_name
+            self.players[p_id]["color"] = clean_color
         self._send_to(p_id, {"type": "profile_result", "success": True})
         if self.game_started:
             if self.on_game_update:

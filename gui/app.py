@@ -359,6 +359,7 @@ class GridGameApp:
         self.lbl_ips.pack(padx=20, pady=3, anchor="w")
 
         self.build_lobby_slots_ui()
+        self.build_lobby_chat_ui()
 
         # Init Server Model
         self.server = GridServer(
@@ -515,11 +516,14 @@ class GridGameApp:
             wrap="word", state="disabled", font=("Segoe UI", 9),
         )
         self.ingame_chat_text.pack(fill="both", expand=True, padx=12, pady=4)
+        self.ingame_chat_text.bind("<Button-1>", self.focus_ingame_chat_entry)
         entry_row = tk.Frame(self.ingame_chat_panel, bg="#1a1a24")
         entry_row.pack(fill="x", padx=12, pady=(4, 12))
         self.ingame_chat_entry = tk.Entry(
             entry_row, bg="#212128", fg="#ffffff", insertbackground="#ffffff",
-            bd=0, font=("Segoe UI", 10),
+            bd=0, font=("Segoe UI", 10), state="normal", takefocus=True,
+            highlightthickness=1, highlightbackground="#3a3a4a",
+            highlightcolor="#00d2ff",
         )
         self.ingame_chat_entry.pack(side="left", fill="x", expand=True, ipady=7)
         self.ingame_chat_entry.bind("<Return>", self.send_ingame_chat)
@@ -529,6 +533,7 @@ class GridGameApp:
             bg="#00d2ff", fg="#121214", bd=0, padx=16, pady=7,
             font=self.button_font, cursor="hand2",
         ).pack(side="right", padx=(8, 0))
+        self.ingame_chat_panel.bind("<Button-1>", self.focus_ingame_chat_entry)
         self.refresh_ingame_chat_text()
 
     def open_ingame_chat(self, event=None):
@@ -538,8 +543,22 @@ class GridGameApp:
             return None
         self.chat_notification_frame.place_forget()
         self.ingame_chat_panel.place(relx=1.0, rely=1.0, x=-20, y=-20, anchor="se")
+        self.ingame_chat_panel.lift()
         self.refresh_ingame_chat_text()
-        self.ingame_chat_entry.focus_set()
+        self.focus_ingame_chat_entry()
+        self.root.after_idle(self.focus_ingame_chat_entry)
+        return "break"
+
+    def focus_ingame_chat_entry(self, event=None):
+        """Keep keyboard input in the editable message field while chat is open."""
+        if not hasattr(self, "ingame_chat_entry"):
+            return "break"
+        try:
+            self.ingame_chat_entry.config(state="normal")
+            self.ingame_chat_entry.focus_force()
+            self.ingame_chat_entry.icursor(tk.END)
+        except tk.TclError:
+            pass
         return "break"
 
     def close_ingame_chat(self, event=None):
@@ -1223,11 +1242,17 @@ class GridGameApp:
                     and self.my_player_id not in self.client.finished_players)):
             return
         player = self.players.get(self.my_player_id, {})
+        unavailable_colors = {
+            info.get("color", "").lower()
+            for player_id, info in self.players.items()
+            if player_id != self.my_player_id and info.get("color")
+        }
         result = PlayerProfileDialog(
             self.root, self.button_font,
             player.get("name", f"Player {self.my_player_id}"),
             player.get("color", COLORS[(self.my_player_id - 1) % len(COLORS)]),
             COLORS,
+            unavailable_colors=unavailable_colors,
         ).show()
         if result:
             self.preferred_name, self.preferred_color = result

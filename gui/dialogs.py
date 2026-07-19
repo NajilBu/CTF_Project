@@ -6,12 +6,16 @@ from network.discovery import discover_games
 
 
 class PlayerProfileDialog:
-    def __init__(self, parent, button_font, name, color, preset_colors):
+    def __init__(self, parent, button_font, name, color, preset_colors,
+                 unavailable_colors=None):
         self.parent = parent
         self.button_font = button_font
         self.name = name
         self.color = color
         self.preset_colors = preset_colors
+        self.unavailable_colors = {
+            str(value).lower() for value in (unavailable_colors or [])
+        }
 
     def show(self):
         result = {"value": None}
@@ -21,7 +25,7 @@ class PlayerProfileDialog:
         dialog.configure(bg="#121214")
         dialog.resizable(False, False)
 
-        width, height = 480, 370
+        width, height = 480, 395
         x = self.parent.winfo_x() + self.parent.winfo_width() // 2 - width // 2
         y = self.parent.winfo_y() + self.parent.winfo_height() // 2 - height // 2
         dialog.geometry(f"{width}x{height}+{x}+{y}")
@@ -41,6 +45,10 @@ class PlayerProfileDialog:
 
         tk.Label(dialog, text="PLAYER COLOR", fg="#8c8c9a", bg="#121214",
                  font=font.Font(family="Segoe UI", size=9, weight="bold")).pack()
+        color_error = tk.Label(
+            dialog, text="", fg="#ff4d4d", bg="#121214",
+            font=font.Font(family="Segoe UI", size=9),
+        )
         swatches = tk.Frame(dialog, bg="#121214")
         swatches.pack(pady=10)
         preview = tk.Label(dialog, text=selected_color.get().upper(), fg="#121214",
@@ -48,13 +56,22 @@ class PlayerProfileDialog:
                            font=font.Font(family="Segoe UI", size=9, weight="bold"))
 
         def choose(value):
-            selected_color.set(value.lower())
+            normalized = value.lower()
+            if normalized in self.unavailable_colors:
+                color_error.config(text="That color is already used by another player.")
+                return
+            color_error.config(text="")
+            selected_color.set(normalized)
             preview.config(text=value.upper(), bg=value)
 
         for value in self.preset_colors:
-            tk.Button(swatches, bg=value, activebackground=value, bd=0,
-                      width=4, height=2, cursor="hand2",
-                      command=lambda v=value: choose(v)).pack(side="left", padx=5)
+            unavailable = value.lower() in self.unavailable_colors
+            tk.Button(
+                swatches, bg=value, activebackground=value, disabledforeground="#555555",
+                bd=0, width=4, height=2, cursor="arrow" if unavailable else "hand2",
+                state="disabled" if unavailable else "normal",
+                command=lambda v=value: choose(v),
+            ).pack(side="left", padx=5)
 
         def choose_custom():
             picked = colorchooser.askcolor(color=selected_color.get(), parent=dialog)[1]
@@ -65,13 +82,16 @@ class PlayerProfileDialog:
                   activebackground="#42425b", activeforeground="#ffffff", bd=0,
                   width=4, height=2, cursor="hand2", font=self.button_font).pack(side="left", padx=5)
         preview.pack(pady=(0, 15))
+        color_error.pack()
 
         def close():
             dialog.destroy()
 
         def save():
             name = " ".join(entry.get().split())[:16]
-            if name:
+            if selected_color.get().lower() in self.unavailable_colors:
+                color_error.config(text="That color is already used by another player.")
+            elif name:
                 result["value"] = (name, selected_color.get())
                 dialog.destroy()
 
@@ -457,6 +477,12 @@ class CustomDifficultyDialog:
                        "Long words  •  Shift \xb11-13  •  4 keyholes  •  Cells close every 30 s",
                        "\u26a0\ufe0f  WARNING: Explored cells will randomly close every 30 seconds!"),
         }
+        hard_level = LEVELS["hard"]
+        LEVELS["hard"] = (
+            hard_level[0], hard_level[1], hard_level[2],
+            "Random letters  |  Shift +/-1-13  |  4 keyholes  |  Cells close every 30 s",
+            hard_level[4],
+        )
 
         # Main content container (swapped between selection and confirm views)
         container = tk.Frame(dialog, bg="#121214")

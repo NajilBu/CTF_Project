@@ -13,9 +13,18 @@ from gui.dialogs import (CustomDifficultyDialog, CustomIPDialog, CustomLockDialo
 
 # Powerup display metadata (mirrors POWERUPS list in server.py)
 POWERUP_META = {
-    "speed":  {"label": "Teleport",    "icon": "\u26a1", "color": "#ffd24d"},
-    "shield": {"label": "Move Item",   "icon": "\U0001f6e1", "color": "#00d2ff"},
-    "reveal": {"label": "Reveal",      "icon": "\U0001f50d", "color": "#ff9f1a"},
+    "speed":  {
+        "label": "Teleport", "icon": "\u26a1", "color": "#ffd24d",
+        "description": "Teleport any player to a random grid they have not discovered.",
+    },
+    "shield": {
+        "label": "Move Item", "icon": "\U0001f6e1", "color": "#00d2ff",
+        "description": "Move one of an opponent's discovered items to a new hidden grid.",
+    },
+    "reveal": {
+        "label": "Reveal", "icon": "\U0001f50d", "color": "#ff9f1a",
+        "description": "Reveal one of your undiscovered vault items instantly.",
+    },
 }
 
 def blend_color(foreground, background="#121214", amount=0.18):
@@ -105,8 +114,10 @@ class GridGameApp:
         self.root.bind("<Return>", lambda e: self.open_vault_at_current_item())
         self.root.bind("<KP_Enter>", lambda e: self.open_vault_at_current_item())
         self.root.bind("<Escape>", lambda e: self.cancel_qte())
+        self.root.bind("<Key-slash>", self.open_ingame_chat)
 
     def clear_screen(self):
+        self.hide_powerup_tooltip()
         if self.current_frame:
             self.current_frame.destroy()
 
@@ -482,6 +493,129 @@ class GridGameApp:
         elif self.is_client and self.client:
             self.client.send_chat(text)
 
+    def build_ingame_chat_ui(self):
+        """Create the transient notification stack and hidden chat panel."""
+        self.ingame_chat_notifications = []
+        self.ingame_chat_snapshot = list(self.current_chat_history())
+
+        self.chat_notification_frame = tk.Frame(self.current_frame, bg="#121214")
+        self.chat_notification_frame.place(relx=1.0, rely=1.0, x=-20, y=-20, anchor="se")
+
+        self.ingame_chat_panel = tk.Frame(
+            self.current_frame, bg="#1a1a24", bd=1, relief="solid",
+            width=390, height=320,
+        )
+        self.ingame_chat_panel.pack_propagate(False)
+        tk.Label(
+            self.ingame_chat_panel, text="TEAM CHAT", fg="#ffd24d", bg="#1a1a24",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+        self.ingame_chat_text = tk.Text(
+            self.ingame_chat_panel, bg="#121214", fg="#ffffff", bd=0,
+            wrap="word", state="disabled", font=("Segoe UI", 9),
+        )
+        self.ingame_chat_text.pack(fill="both", expand=True, padx=12, pady=4)
+        entry_row = tk.Frame(self.ingame_chat_panel, bg="#1a1a24")
+        entry_row.pack(fill="x", padx=12, pady=(4, 12))
+        self.ingame_chat_entry = tk.Entry(
+            entry_row, bg="#212128", fg="#ffffff", insertbackground="#ffffff",
+            bd=0, font=("Segoe UI", 10),
+        )
+        self.ingame_chat_entry.pack(side="left", fill="x", expand=True, ipady=7)
+        self.ingame_chat_entry.bind("<Return>", self.send_ingame_chat)
+        self.ingame_chat_entry.bind("<Escape>", self.close_ingame_chat)
+        tk.Button(
+            entry_row, text="SEND", command=self.send_ingame_chat,
+            bg="#00d2ff", fg="#121214", bd=0, padx=16, pady=7,
+            font=self.button_font, cursor="hand2",
+        ).pack(side="right", padx=(8, 0))
+        self.refresh_ingame_chat_text()
+
+    def open_ingame_chat(self, event=None):
+        if not self.in_active_game or not hasattr(self, "ingame_chat_panel"):
+            return None
+        if event is not None and self.root.focus_get() is self.ingame_chat_entry:
+            return None
+        self.chat_notification_frame.place_forget()
+        self.ingame_chat_panel.place(relx=1.0, rely=1.0, x=-20, y=-20, anchor="se")
+        self.refresh_ingame_chat_text()
+        self.ingame_chat_entry.focus_set()
+        return "break"
+
+    def close_ingame_chat(self, event=None):
+        if hasattr(self, "ingame_chat_panel"):
+            self.ingame_chat_panel.place_forget()
+        if hasattr(self, "chat_notification_frame"):
+            self.chat_notification_frame.place(relx=1.0, rely=1.0, x=-20, y=-20, anchor="se")
+        if hasattr(self, "canvas"):
+            self.canvas.focus_set()
+        return "break"
+
+    def send_ingame_chat(self, event=None):
+        if not hasattr(self, "ingame_chat_entry"):
+            return "break"
+        text = self.ingame_chat_entry.get().strip()
+        if text:
+            self.ingame_chat_entry.delete(0, tk.END)
+            if self.is_host and self.server:
+                self.server.send_host_chat(text)
+            elif self.is_client and self.client:
+                self.client.send_chat(text)
+        return "break"
+
+    def refresh_ingame_chat_text(self):
+        if not hasattr(self, "ingame_chat_text") or not self.ingame_chat_text.winfo_exists():
+            return
+        self.ingame_chat_text.config(state="normal")
+        self.ingame_chat_text.delete("1.0", tk.END)
+        for index, message in enumerate(self.current_chat_history()):
+            tag = f"ingame_chat_{index}"
+            self.ingame_chat_text.tag_config(tag, foreground=message.get("color", "#ffffff"))
+            prefix = "" if message.get("kind") == "system" else f"{message.get('name', 'Player')}: "
+            self.ingame_chat_text.insert(tk.END, prefix + message.get("text", "") + "\n", tag)
+        self.ingame_chat_text.config(state="disabled")
+        self.ingame_chat_text.see(tk.END)
+
+    def update_ingame_chat(self):
+        """Show notifications for messages added since the last state update."""
+        if not self.in_active_game or not hasattr(self, "chat_notification_frame"):
+            return
+        history = list(self.current_chat_history())
+        previous = getattr(self, "ingame_chat_snapshot", [])
+        overlap = min(len(previous), len(history))
+        while overlap and previous[-overlap:] != history[:overlap]:
+            overlap -= 1
+        for message in history[overlap:]:
+            self.show_chat_notification(message)
+        self.ingame_chat_snapshot = history
+        self.refresh_ingame_chat_text()
+
+    def show_chat_notification(self, message):
+        if len(self.ingame_chat_notifications) >= 7:
+            self.remove_chat_notification(self.ingame_chat_notifications[0])
+        card = tk.Frame(
+            self.chat_notification_frame, bg="#1a1a24", bd=1, relief="solid",
+            highlightthickness=1, highlightbackground=message.get("color", "#8c8c9a"),
+        )
+        card.pack(side="bottom", anchor="e", pady=3)
+        prefix = "" if message.get("kind") == "system" else f"{message.get('name', 'Player')}: "
+        tk.Label(
+            card, text=prefix + message.get("text", ""),
+            fg=message.get("color", "#ffffff"), bg="#1a1a24",
+            font=("Segoe UI", 9), wraplength=330, justify="left",
+            padx=12, pady=8,
+        ).pack()
+        self.ingame_chat_notifications.append(card)
+        card._expiry_id = self.root.after(5000, lambda item=card: self.remove_chat_notification(item))
+
+    def remove_chat_notification(self, card):
+        if card in getattr(self, "ingame_chat_notifications", []):
+            self.ingame_chat_notifications.remove(card)
+        try:
+            card.destroy()
+        except Exception:
+            pass
+
     def update_lobby_ui(self):
         if not hasattr(self, 'slot_status_labels') or not self.slot_status_labels:
             return
@@ -559,6 +693,7 @@ class GridGameApp:
                 }
             self.update_host_ui_stats()
             self.draw_elements()
+            self.update_ingame_chat()
 
     def start_host_active_game_screen(self):
         play_sound("click")
@@ -791,7 +926,7 @@ class GridGameApp:
 
         self.footer = tk.Label(
             self.current_frame,
-            text="Host Spectator Mode - Live Split-Screen Player Monitoring",
+            text="Host Spectator Mode - Live Split-Screen Player Monitoring  / to chat",
             fg="#8c8c9a",
             bg="#121214",
             font=self.hint_font
@@ -802,6 +937,7 @@ class GridGameApp:
         self.draw_grid()
         self.update_host_ui_stats()
         self.draw_elements()
+        self.build_ingame_chat_ui()
 
     def update_host_ui_stats(self):
         if not hasattr(self, 'lbl_host_status'):
@@ -1159,6 +1295,7 @@ class GridGameApp:
                 else:
                     self.update_client_ui_stats()
                     self.draw_elements()
+                    self.update_ingame_chat()
             else:
                 self.update_lobby_ui()
 
@@ -1286,6 +1423,10 @@ class GridGameApp:
             # Click or key 1/2/3 to select
             sf.bind("<Button-1>", lambda e, i=slot_i: self.select_powerup_slot(i))
             lbl.bind("<Button-1>", lambda e, i=slot_i: self.select_powerup_slot(i))
+            sf.bind("<Enter>", lambda e, i=slot_i: self.show_powerup_tooltip(i))
+            lbl.bind("<Enter>", lambda e, i=slot_i: self.show_powerup_tooltip(i))
+            sf.bind("<Leave>", self.schedule_powerup_tooltip_hide)
+            lbl.bind("<Leave>", self.schedule_powerup_tooltip_hide)
             self.powerup_slot_frames.append(sf)
             self.powerup_slot_labels.append(lbl)
 
@@ -1300,7 +1441,7 @@ class GridGameApp:
 
         self.footer = tk.Label(
             self.current_frame,
-            text="Arrow keys / WASD to move  \u2022  1 / 2 / 3 to select powerup  \u2022  E to use",
+            text="Arrow keys / WASD to move  \u2022  1 / 2 / 3 to select powerup  \u2022  E to use  \u2022  / to chat",
             fg="#8c8c9a",
             bg="#121214",
             font=self.hint_font
@@ -1317,6 +1458,7 @@ class GridGameApp:
         self.draw_grid()
         self.update_client_ui_stats()
         self.draw_elements()
+        self.build_ingame_chat_ui()
 
     def show_game_finished_screen(self, match_complete):
         self.in_active_game = True
@@ -1432,6 +1574,9 @@ class GridGameApp:
 
     def select_powerup_slot(self, slot_index):
         """Highlight the selected powerup slot (0-based). No-op if slot is empty."""
+        if (hasattr(self, "ingame_chat_entry")
+                and self.root.focus_get() is self.ingame_chat_entry):
+            return
         if not hasattr(self, 'powerup_slot_frames'):
             return
         # Get current slots for this player
@@ -1477,6 +1622,73 @@ class GridGameApp:
 
             sf.config(highlightbackground=border_color, bg=bg)
             lbl.config(bg=bg)
+
+    def powerup_tooltip_content(self, slot_index):
+        """Return display metadata for a powerup inventory slot."""
+        slot_types = ("reveal", "shield", "speed")
+        slots = [None, None, None]
+        if self.my_player_id and self.my_player_id in self.per_player_data:
+            slots = self.per_player_data[self.my_player_id].get("powerups", slots)
+        pu_id = slots[slot_index] if slot_index < len(slots) else None
+        expected_id = slot_types[slot_index]
+        meta = POWERUP_META.get(pu_id or expected_id, {})
+        status = "Press E to use after selecting." if pu_id else "EMPTY — discover this pickup on the grid."
+        return meta, status
+
+    def show_powerup_tooltip(self, slot_index):
+        """Show contextual powerup information next to the pointer."""
+        pending = getattr(self, "powerup_tooltip_hide_after", None)
+        if pending is not None:
+            self.root.after_cancel(pending)
+            self.powerup_tooltip_hide_after = None
+        self.hide_powerup_tooltip()
+        meta, status = self.powerup_tooltip_content(slot_index)
+
+        tooltip = tk.Toplevel(self.root)
+        tooltip.wm_overrideredirect(True)
+        tooltip.attributes("-topmost", True)
+        panel = tk.Frame(
+            tooltip, bg="#101018", bd=1, relief="solid",
+            highlightthickness=1, highlightbackground=meta.get("color", "#ffffff"),
+        )
+        panel.pack()
+        tk.Label(
+            panel, text=f"{meta.get('icon', '?')}  {meta.get('label', 'Powerup')}",
+            fg=meta.get("color", "#ffffff"), bg="#101018",
+            font=("Segoe UI", 10, "bold"), anchor="w",
+        ).pack(fill="x", padx=12, pady=(9, 3))
+        tk.Label(
+            panel, text=meta.get("description", "No information available."),
+            fg="#e8e8ee", bg="#101018", font=("Segoe UI", 9),
+            justify="left", wraplength=290, anchor="w",
+        ).pack(fill="x", padx=12, pady=2)
+        tk.Label(
+            panel, text=status, fg="#8c8c9a", bg="#101018",
+            font=("Segoe UI", 8, "italic"), anchor="w",
+        ).pack(fill="x", padx=12, pady=(3, 9))
+
+        tooltip.update_idletasks()
+        x = self.root.winfo_pointerx() + 14
+        y = self.root.winfo_pointery() + 16
+        x = min(x, tooltip.winfo_screenwidth() - tooltip.winfo_reqwidth() - 8)
+        y = min(y, tooltip.winfo_screenheight() - tooltip.winfo_reqheight() - 8)
+        tooltip.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.powerup_tooltip = tooltip
+
+    def schedule_powerup_tooltip_hide(self, event=None):
+        pending = getattr(self, "powerup_tooltip_hide_after", None)
+        if pending is not None:
+            self.root.after_cancel(pending)
+        self.powerup_tooltip_hide_after = self.root.after(80, self.hide_powerup_tooltip)
+
+    def hide_powerup_tooltip(self):
+        tooltip = getattr(self, "powerup_tooltip", None)
+        if tooltip is not None:
+            try:
+                tooltip.destroy()
+            except Exception:
+                pass
+            self.powerup_tooltip = None
 
     def open_lock_dialog(self):
         """Open the 3-keyhole vault screen for multiplayer client."""
@@ -1534,6 +1746,9 @@ class GridGameApp:
 
     def use_selected_powerup(self):
         """Called when player presses E. Activates the selected powerup slot."""
+        if (hasattr(self, "ingame_chat_entry")
+                and self.root.focus_get() is self.ingame_chat_entry):
+            return
         if self.selected_powerup_slot is None:
             return
 
@@ -1769,13 +1984,11 @@ class GridGameApp:
                         )
 
                     for (r, c), powerup_id in self.server.powerups.items():
-                        discovered = (r, c) in visited
-                        meta = POWERUP_META.get(powerup_id, {})
-                        marker_color = meta.get("color", "#ffffff") if discovered else "#8c8c9a"
-                        marker_text = (
-                            str({"reveal": 1, "shield": 2, "speed": 3}.get(powerup_id, "?"))
-                            if discovered else "?"
-                        )
+                        # Spectators can see pickup locations, but never their
+                        # identities. Only a player who discovered the cell can
+                        # see the corresponding powerup icon on their own grid.
+                        marker_color = "#8c8c9a"
+                        marker_text = "?"
                         pcx = c * split_size + split_size // 2
                         pcy = r * split_size + split_size // 2
                         radius = max(3, split_size // 4)
@@ -1971,6 +2184,9 @@ class GridGameApp:
             self.draw_elements()
 
     def move_player(self, dr, dc):
+        if (hasattr(self, "ingame_chat_entry")
+                and self.root.focus_get() is self.ingame_chat_entry):
+            return
         if not self.in_game:
             return
 
@@ -2099,7 +2315,7 @@ class GridGameApp:
             cx = c * CELL_SIZE + CELL_SIZE // 2
             cy = r * CELL_SIZE + CELL_SIZE // 2
             color = meta.get("color", "#ffffff") if discovered else "#8c8c9a"
-            marker = str({"reveal": 1, "shield": 2, "speed": 3}.get(powerup_id, "?")) if discovered else "?"
+            marker = meta.get("icon", "?") if discovered else "?"
             self.canvas.create_oval(
                 cx - 13, cy - 13, cx + 13, cy + 13,
                 fill="#1a1a24", outline=color, width=3,

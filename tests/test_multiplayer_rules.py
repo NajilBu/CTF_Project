@@ -162,6 +162,16 @@ class MultiplayerRulesTest(unittest.TestCase):
         self.assertEqual(server.chat_history[-1]["kind"], "host")
         self.assertEqual(server.chat_history[-1]["name"], "HOST")
 
+    def test_player_and_host_can_chat_during_active_match(self):
+        server = self.make_server()
+        server.game_started = True
+        server.match_finished = False
+
+        self.assertTrue(server.process_client_chat(1, "in game"))
+        self.assertTrue(server.send_host_chat("host in game"))
+        self.assertEqual(server.chat_history[-2]["text"], "in game")
+        self.assertEqual(server.chat_history[-1]["text"], "host in game")
+
     def test_chat_and_profile_changes_are_allowed_after_match_completion(self):
         server = self.make_server()
         server.game_started = True
@@ -411,7 +421,7 @@ class VisibilityTest(unittest.TestCase):
         self.assertEqual(len(app.canvas.rectangles), 1)
         self.assertEqual(len(app.canvas.ovals), 2)
         powerup_markers = [kwargs.get("text") for _, kwargs in app.canvas.texts]
-        self.assertIn("1", powerup_markers)
+        self.assertIn("\U0001f50d", powerup_markers)
         self.assertIn("?", powerup_markers)
         outlines = [kwargs.get("outline") for _, kwargs in app.canvas.ovals]
         self.assertIn("#ff9f1a", outlines)

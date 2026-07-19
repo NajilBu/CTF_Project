@@ -357,7 +357,10 @@ class GridServer:
         self.players[p_id]["name"] = clean_name
         self.players[p_id]["color"] = clean_color
         self._send_to(p_id, {"type": "profile_result", "success": True})
-        if self.on_lobby_update:
+        if self.game_started:
+            if self.on_game_update:
+                self.on_game_update()
+        elif self.on_lobby_update:
             self.on_lobby_update()
         if old_name != clean_name:
             self._append_chat(
@@ -379,16 +382,17 @@ class GridServer:
             "kind": kind, "name": name, "color": color, "text": clean_text,
         })
         self.chat_history = self.chat_history[-MAX_CHAT_MESSAGES:]
-        if self.on_lobby_update:
+        if self.game_started:
+            if self.on_game_update:
+                self.on_game_update()
+        elif self.on_lobby_update:
             self.on_lobby_update()
         if broadcast:
             self.broadcast_state()
         return True
 
     def process_client_chat(self, p_id, text):
-        if (p_id not in self.players
-                or (self.game_started and not self.match_finished
-                    and p_id not in self.finished_players)):
+        if p_id not in self.players:
             return False
         player = self.players[p_id]
         return self._append_chat(
@@ -397,8 +401,6 @@ class GridServer:
         )
 
     def send_host_chat(self, text):
-        if self.game_started and not self.match_finished:
-            return False
         return self._append_chat("host", "HOST", "#ffd24d", text)
 
     # ------------------------------------------------------------------

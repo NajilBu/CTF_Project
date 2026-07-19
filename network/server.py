@@ -81,6 +81,8 @@ class GridServer:
 
         # Finish order — p_ids appended in the order they collect all items
         self.finished_players = []  # [p_id, ...]  (ordered by completion time)
+        self.finish_times = {}      # p_id -> elapsed seconds from round start
+        self.round_start_time = None
         self.finish_target = 1
         self.match_finished = False
 
@@ -505,6 +507,8 @@ class GridServer:
                 # Record finish order when all required items are collected.
                 if len(self.player_collected[p_id]) >= self.items_per_player and p_id not in self.finished_players:
                     self.finished_players.append(p_id)
+                    if self.round_start_time:
+                        self.finish_times[p_id] = time.time() - self.round_start_time
                     if len(self.finished_players) >= self.finish_target:
                         self.match_finished = True
                         self.cell_close_timer_active = False
@@ -660,6 +664,7 @@ class GridServer:
             ],
             "move_item_targets": self.move_item_targets_for(recipient_id),
             "finished_players": list(self.finished_players),
+            "finish_times": {str(k): v for k, v in self.finish_times.items()},
             "finish_target": self.finish_target,
             "match_finished": self.match_finished,
             "difficulty": self.difficulty,
@@ -690,6 +695,8 @@ class GridServer:
         self.items_per_player  = 4 if difficulty == "hard" else 3
         self.game_started      = True
         self.finished_players  = []
+        self.finish_times      = {}
+        self.round_start_time  = time.time()
         self.finish_target     = self.finish_target_for(len(self.players))
         self.match_finished    = False
         self.cell_close_timer_active = False
@@ -737,6 +744,8 @@ class GridServer:
             self.player_item_keys[p_id] = {}
             self.player_powerups[p_id]  = [None, None, None]
         self.finished_players = []
+        self.finish_times = {}
+        self.round_start_time = time.time()
         self.finish_target = self.finish_target_for(len(self.players))
         self.match_finished = False
         self.cell_close_timer_active = False

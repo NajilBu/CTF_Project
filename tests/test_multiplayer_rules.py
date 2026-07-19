@@ -5,7 +5,8 @@ from config import COLORS
 from gui.app import GridGameApp
 from gui.dialogs import LockScreenDialog
 from network.server import (GridServer, expected_caesar_answer as expected_server_answer,
-                            make_caesar_clue)
+                            GAME_MODE_DUO, GAME_MODE_SOLO, ROLE_DECRYPT,
+                            ROLE_NEUTRAL, ROLE_POWERUPS, make_caesar_clue)
 
 
 class MultiplayerRulesTest(unittest.TestCase):
@@ -172,6 +173,84 @@ class MultiplayerRulesTest(unittest.TestCase):
             assigned.lower(),
             {player["color"].lower() for player in server.players.values()},
         )
+
+    def test_duo_mode_players_start_neutral_and_pick_complete_teams(self):
+        server = self.make_server()
+        server.game_started = False
+        server.set_game_mode(GAME_MODE_DUO)
+
+        self.assertEqual(server.game_mode, GAME_MODE_DUO)
+        self.assertEqual(server.players[1]["role"], ROLE_NEUTRAL)
+        self.assertIsNone(server.players[2]["team"])
+
+        self.assertTrue(server.process_client_team(1, 1))
+        self.assertEqual(server.players[1]["role"], ROLE_DECRYPT)
+        self.assertTrue(server.process_client_team(2, 1))
+        self.assertEqual(server.players[2]["role"], ROLE_POWERUPS)
+
+        server.players[1]["ready"] = True
+        server.players[2]["ready"] = True
+        self.assertTrue(server.can_start_game())
+
+    def test_duo_mode_requires_complete_ready_pairs(self):
+        server = self.make_server()
+        server.game_started = False
+        server.set_game_mode(GAME_MODE_DUO)
+        server.process_client_team(1, 1)
+        server.players[1]["ready"] = True
+        server.players[2]["ready"] = True
+
+        self.assertFalse(server.can_start_game())
+
+        server.process_client_team(2, 1)
+        server.players[1]["ready"] = True
+        server.players[2]["ready"] = True
+
+        self.assertTrue(server.can_start_game())
+
+    @patch("network.server.play_sound", lambda *_: None)
+    def test_duo_roles_restrict_decrypt_and_powerup_actions(self):
+        server = self.make_server()
+        server.game_mode = GAME_MODE_DUO
+        server.players[1]["team"] = 1
+        server.players[2]["team"] = 1
+        server.assign_duo_roles()
+        server.items_per_player = 1
+
+        item_pos = (0, 0)
+        server.players[1]["r"], server.players[1]["c"] = item_pos
+        server.players[2]["r"], server.players[2]["c"] = item_pos
+        server.player_items[1] = {item_pos}
+        server.player_item_keys[1] = {item_pos: "SECRET|TFDSFU|1"}
+
+        server.process_client_unlock(2, item_pos[0], item_pos[1], "SECRET")
+        self.assertEqual(server.player_items[1], {item_pos})
+
+        server.process_client_unlock(1, item_pos[0], item_pos[1], "SECRET")
+        self.assertEqual(server.player_items[1], set())
+        self.assertIn(1, server.finished_players)
+        self.assertIn(2, server.finished_players)
+
+        server.player_powerups[1][0] = "reveal"
+        server.process_client_powerup(1, 0)
+        self.assertEqual(server.player_powerups[1][0], "reveal")
+
+    @patch("network.server.play_sound", lambda *_: None)
+    def test_duo_powerup_partner_reveals_decryptor_item(self):
+        server = self.make_server()
+        server.game_mode = GAME_MODE_DUO
+        server.players[1]["team"] = 1
+        server.players[2]["team"] = 1
+        server.assign_duo_roles()
+        item_pos = (4, 4)
+        server.player_items[1] = {item_pos}
+        server.player_visited[1] = {(0, 0)}
+        server.player_powerups[2][0] = "reveal"
+
+        server.process_client_powerup(2, 0)
+
+        self.assertIn(item_pos, server.player_visited[1])
+        self.assertIsNone(server.player_powerups[2][0])
 
     def test_player_and_host_chat_use_authoritative_identity(self):
         server = self.make_server()

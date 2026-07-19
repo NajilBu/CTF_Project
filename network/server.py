@@ -19,6 +19,12 @@ POWERUP_SPAWN_INTERVAL_SECONDS = 30
 HARD_POWERUP_SPAWN_INTERVAL_SECONDS = 15
 MAX_CHAT_MESSAGES = 100
 MAX_CHAT_LENGTH = 240
+GAME_MODE_SOLO = "solo"
+GAME_MODE_DUO = "duo"
+ROLE_SOLO = "solo"
+ROLE_NEUTRAL = "neutral"
+ROLE_DECRYPT = "decrypt"
+ROLE_POWERUPS = "powerups"
 
 # Word pools for Caesar cipher clues
 _WORDS_EASY   = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING", "DECODE"]
@@ -91,6 +97,7 @@ class GridServer:
         # Difficulty state
         self.difficulty            = "easy"
         self.items_per_player      = 3
+        self.game_mode             = GAME_MODE_SOLO
         self.cell_close_timer_active = False
         self.discovery = LobbyDiscoveryResponder(self._discovery_state)
 
@@ -120,6 +127,17 @@ class GridServer:
             return 2
         return 1
 
+    def objective_player_ids(self):
+        if self.game_mode == GAME_MODE_DUO:
+            return [
+                p_id for p_id, player in self.players.items()
+                if player.get("role") == ROLE_DECRYPT
+            ]
+        return list(self.players.keys())
+
+    def current_finish_target(self):
+        return self.finish_target_for(len(self.objective_player_ids()))
+
     def spawn_player_items(self):
         """Spawn items_per_player unique items for every player, each with a Caesar cipher clue."""
         self.host_discovered_items.clear()
@@ -131,6 +149,8 @@ class GridServer:
         for p_id in self.players:
             self.player_items[p_id] = set()
             self.player_item_keys[p_id] = {}
+            if not self.can_player_decrypt(p_id):
+                continue
             attempts = 0
             while len(self.player_items[p_id]) < self.items_per_player and attempts < 10000:
                 attempts += 1
@@ -253,6 +273,8 @@ class GridServer:
                 self.players[p_id] = {
                     "r": r, "c": c, "color": color, "ip": addr[0],
                     "moves": 0, "ready": False, "name": f"Player {p_id}",
+                    "team": None,
+                    "role": ROLE_SOLO if self.game_mode == GAME_MODE_SOLO else ROLE_NEUTRAL,
                 }
             self.player_visited[p_id]   = {(r, c)}
             self.player_items[p_id]     = set()
@@ -279,6 +301,119 @@ class GridServer:
 
             threading.Thread(target=self._handle_client,
                              args=(p_id, conn), daemon=True).start()
+
+    def duo_team_count(self):
+        return max(1, (self.max_players + 1) // 2)
+
+    def _duo_team_members(self, team_id):
+        return sorted(
+            p_id for p_id, player in self.players.items()
+            if player.get("team") == team_id
+        )
+
+    def assign_duo_roles(self):
+        if self.game_mode == GAME_MODE_SOLO:
+            for player in self.players.values():
+                player["team"] = None
+                player["role"] = ROLE_SOLO
+            return
+
+        for player in self.players.values():
+            player["role"] = ROLE_NEUTRAL
+        for team_id in range(1, self.duo_team_count() + 1):
+            members = self._duo_team_members(team_id)
+            for index, p_id in enumerate(members[:2]):
+                self.players[p_id]["role"] = ROLE_DECRYPT if index == 0 else ROLE_POWERUPS
+
+    def set_game_mode(self, mode):
+        if self.game_started or self.countdown_active:
+            return False
+        if mode not in (GAME_MODE_SOLO, GAME_MODE_DUO):
+            return False
+        if self.game_mode != mode:
+            self.game_mode = mode
+            for player in self.players.values():
+                player["ready"] = False
+                player["team"] = None
+            self.assign_duo_roles()
+            self.broadcast_state()
+            if self.on_lobby_update:
+                self.on_lobby_update()
+        return True
+
+    def process_client_team(self, p_id, team_id):
+        if (p_id not in self.players or self.game_started or self.countdown_active
+                or self.game_mode != GAME_MODE_DUO):
+            return False
+        try:
+            team_id = int(team_id)
+        except (TypeError, ValueError):
+            team_id = None
+
+        if team_id is None or team_id == 0:
+            self.players[p_id]["team"] = None
+        elif not (1 <= team_id <= self.duo_team_count()):
+            return False
+        else:
+            members = self._duo_team_members(team_id)
+            if p_id not in members and len(members) >= 2:
+                return False
+            self.players[p_id]["team"] = team_id
+
+        self.players[p_id]["ready"] = False
+        self.assign_duo_roles()
+        if self.on_lobby_update:
+            self.on_lobby_update()
+        self.broadcast_state()
+        return True
+
+    def can_player_decrypt(self, p_id):
+        if self.game_mode == GAME_MODE_SOLO:
+            return True
+        return self.players.get(p_id, {}).get("role") == ROLE_DECRYPT
+
+    def can_player_use_powerups(self, p_id):
+        if self.game_mode == GAME_MODE_SOLO:
+            return True
+        return self.players.get(p_id, {}).get("role") == ROLE_POWERUPS
+
+    def teammate_decryptor_for(self, p_id):
+        player = self.players.get(p_id, {})
+        team_id = player.get("team")
+        if self.game_mode != GAME_MODE_DUO or not team_id:
+            return p_id
+        for member_id in self._duo_team_members(team_id):
+            if self.players.get(member_id, {}).get("role") == ROLE_DECRYPT:
+                return member_id
+        return p_id
+
+    def players_are_teammates(self, first_id, second_id):
+        if self.game_mode != GAME_MODE_DUO:
+            return False
+        first_team = self.players.get(first_id, {}).get("team")
+        second_team = self.players.get(second_id, {}).get("team")
+        return first_team is not None and first_team == second_team
+
+    def can_start_game(self):
+        if self.game_started or self.countdown_active:
+            return False
+        if not self.players:
+            return False
+        if not all(player.get("ready", False) for player in self.players.values()):
+            return False
+        if self.game_mode == GAME_MODE_SOLO:
+            return True
+
+        assigned_players = [
+            p_id for p_id, player in self.players.items()
+            if player.get("team") is not None
+        ]
+        if len(assigned_players) != len(self.players) or len(self.players) % 2:
+            return False
+        for team_id in {self.players[p_id].get("team") for p_id in assigned_players}:
+            if len(self._duo_team_members(team_id)) != 2:
+                return False
+        return True
 
     def available_player_color(self, p_id):
         """Choose a unique preset color, preferring the lobby slot's normal color."""
@@ -314,7 +449,10 @@ class GridServer:
                         self.process_client_unlock(p_id, r, c, msg.get("key", ""))
                     elif msg.get("action") == "ready":
                         if p_id in self.players:
-                            self.players[p_id]["ready"] = bool(msg.get("ready", False))
+                            wants_ready = bool(msg.get("ready", False))
+                            if self.game_mode == GAME_MODE_DUO and self.players[p_id].get("team") is None:
+                                wants_ready = False
+                            self.players[p_id]["ready"] = wants_ready
                             if self.on_lobby_update:
                                 self.on_lobby_update()
                             self.broadcast_state()
@@ -324,6 +462,8 @@ class GridServer:
                         self.process_client_profile(p_id, msg.get("name", ""), msg.get("color", ""))
                     elif msg.get("action") == "chat":
                         self.process_client_chat(p_id, msg.get("text", ""))
+                    elif msg.get("action") == "team":
+                        self.process_client_team(p_id, msg.get("team"))
             except Exception:
                 break
 
@@ -338,6 +478,7 @@ class GridServer:
                   self.player_item_keys, self.player_powerups):
             if p_id in d:
                 del d[p_id]
+        self.assign_duo_roles()
 
         self._append_chat(
             "system", "SYSTEM", "#8c8c9a",
@@ -462,7 +603,7 @@ class GridServer:
         self.player_visited[p_id].add((new_r, new_c))
 
         # Auto-collect powerup if player steps on one
-        if (new_r, new_c) in self.powerups:
+        if (new_r, new_c) in self.powerups and self.can_player_use_powerups(p_id):
             pu_id = self.powerups[(new_r, new_c)]
             slots = self.player_powerups.setdefault(p_id, [None, None, None])
             slot_index = POWERUP_SLOTS[pu_id]
@@ -485,6 +626,10 @@ class GridServer:
     def process_client_unlock(self, p_id, r, c, entered_key):
         """Check if the entered key matches the specified item cell. Player must be standing on it."""
         if p_id not in self.players or not self.game_started or self.match_finished:
+            return
+        if not self.can_player_decrypt(p_id):
+            play_sound("qte_wrong")
+            self._send_to(p_id, {"type": "unlock_result", "success": False})
             return
         if r is None or c is None:
             return
@@ -513,10 +658,24 @@ class GridServer:
                 play_sound("collect")
                 # Record finish order when all required items are collected.
                 if len(self.player_collected[p_id]) >= self.items_per_player and p_id not in self.finished_players:
-                    self.finished_players.append(p_id)
+                    finished_members = [p_id]
+                    if self.game_mode == GAME_MODE_DUO:
+                        team_id = self.players[p_id].get("team")
+                        finished_members = self._duo_team_members(team_id) if team_id else [p_id]
+                    finish_time = time.time() - self.round_start_time if self.round_start_time else None
+                    for member_id in finished_members:
+                        if member_id not in self.finished_players:
+                            self.finished_players.append(member_id)
+                        if finish_time is not None:
+                            self.finish_times[member_id] = finish_time
                     if self.round_start_time:
-                        self.finish_times[p_id] = time.time() - self.round_start_time
-                    if len(self.finished_players) >= self.finish_target:
+                        self.finish_times[p_id] = self.finish_times.get(p_id, time.time() - self.round_start_time)
+                    objective_finishers = [
+                        member_id for member_id in self.finished_players
+                        if self.game_mode == GAME_MODE_SOLO
+                        or self.players.get(member_id, {}).get("role") == ROLE_DECRYPT
+                    ]
+                    if len(objective_finishers) >= self.finish_target:
                         self.match_finished = True
                         self.cell_close_timer_active = False
                 self._send_to(p_id, {"type": "unlock_result", "success": True})
@@ -533,6 +692,9 @@ class GridServer:
     def process_client_powerup(self, p_id, slot, target_id=None):
         if p_id not in self.players or not self.game_started or self.match_finished:
             return
+        if not self.can_player_use_powerups(p_id):
+            play_sound("qte_wrong")
+            return
         slots = self.player_powerups.get(p_id, [None, None, None])
         if slot < 0 or slot >= 3 or slots[slot] is None:
             return
@@ -543,13 +705,14 @@ class GridServer:
 
         if pu_type == "reveal":
             # Mark the player's nearest undiscovered item as visited (revealed)
-            my_items   = self.player_items.get(p_id, set())
-            my_visited = self.player_visited.get(p_id, set())
+            reveal_owner = self.teammate_decryptor_for(p_id)
+            my_items   = self.player_items.get(reveal_owner, set())
+            my_visited = self.player_visited.get(reveal_owner, set())
             undiscovered = [item for item in my_items if item not in my_visited]
             if undiscovered:
                 # Pick the first undiscovered item
                 next_item = undiscovered[0]
-                self.player_visited[p_id].add(next_item)
+                self.player_visited[reveal_owner].add(next_item)
                 self.host_discovered_items.add(next_item)
                 slots[slot] = None
                 play_sound("qte_success")
@@ -564,7 +727,8 @@ class GridServer:
                 owner_id = None
 
             affected = False
-            if owner_id in self.players and owner_id != p_id:
+            if (owner_id in self.players and owner_id != p_id
+                    and not self.players_are_teammates(p_id, owner_id)):
                 eligible_items = list(
                     self.player_items.get(owner_id, set())
                     & self.host_discovered_items
@@ -676,6 +840,7 @@ class GridServer:
             "match_finished": self.match_finished,
             "difficulty": self.difficulty,
             "items_per_player": self.items_per_player,
+            "game_mode": self.game_mode,
             "countdown": self.countdown,
             "chat_history": list(self.chat_history),
         }
@@ -683,7 +848,9 @@ class GridServer:
     def move_item_targets_for(self, p_id):
         return [
             owner_id for owner_id, items in self.player_items.items()
-            if owner_id != p_id and bool(items & self.host_discovered_items)
+            if (owner_id != p_id
+                and not self.players_are_teammates(p_id, owner_id)
+                and bool(items & self.host_discovered_items))
         ]
 
     def broadcast_state(self):
@@ -700,11 +867,12 @@ class GridServer:
         self.countdown_active  = False
         self.difficulty        = difficulty
         self.items_per_player  = 4 if difficulty == "hard" else 3
+        self.assign_duo_roles()
         self.game_started      = True
         self.finished_players  = []
         self.finish_times      = {}
         self.round_start_time  = time.time()
-        self.finish_target     = self.finish_target_for(len(self.players))
+        self.finish_target     = self.current_finish_target()
         self.match_finished    = False
         self.cell_close_timer_active = False
         self.spawn_player_items()
@@ -717,7 +885,7 @@ class GridServer:
 
     def begin_countdown(self, difficulty="easy", seconds=3):
         """Broadcast a synchronized lobby countdown, then start the match."""
-        if self.game_started or self.countdown_active:
+        if self.game_started or self.countdown_active or not self.can_start_game():
             return
         self.difficulty = difficulty
         self.items_per_player = 4 if difficulty == "hard" else 3
@@ -750,10 +918,11 @@ class GridServer:
             self.player_collected[p_id] = {}
             self.player_item_keys[p_id] = {}
             self.player_powerups[p_id]  = [None, None, None]
+        self.assign_duo_roles()
         self.finished_players = []
         self.finish_times = {}
         self.round_start_time = time.time()
-        self.finish_target = self.finish_target_for(len(self.players))
+        self.finish_target = self.current_finish_target()
         self.match_finished = False
         self.cell_close_timer_active = False
         self.spawn_player_items()

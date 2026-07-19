@@ -33,6 +33,7 @@ class GridClient:
         self.match_finished = False
         self.difficulty       = "easy"
         self.items_per_player = 3
+        self.game_mode        = "solo"
 
     # ------------------------------------------------------------------
     def get_my_visited(self):
@@ -136,6 +137,7 @@ class GridClient:
                         self.match_finished    = msg.get("match_finished", False)
                         self.difficulty        = msg.get("difficulty", "easy")
                         self.items_per_player  = msg.get("items_per_player", 3)
+                        self.game_mode         = msg.get("game_mode", "solo")
 
                         if self.on_state_update:
                             self.on_state_update()
@@ -181,6 +183,15 @@ class GridClient:
         ready_msg = {"action": "ready", "ready": bool(ready)}
         try:
             self.client_socket.sendall((json.dumps(ready_msg) + "\n").encode())
+        except Exception:
+            pass
+
+    def send_team(self, team_id):
+        if not self.client_running:
+            return
+        team_msg = {"action": "team", "team": team_id}
+        try:
+            self.client_socket.sendall((json.dumps(team_msg) + "\n").encode())
         except Exception:
             pass
 

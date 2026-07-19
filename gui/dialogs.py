@@ -321,6 +321,7 @@ class CustomPlayerCountDialog:
 
     def show(self):
         result_var = tk.StringVar(value="")
+        mode_var = tk.StringVar(value="solo")
         
         dialog = tk.Toplevel(self.parent)
         dialog.title("Host Game")
@@ -328,7 +329,7 @@ class CustomPlayerCountDialog:
         dialog.resizable(False, False)
         
         dialog_width = 440
-        dialog_height = 240
+        dialog_height = 340
         main_x = self.parent.winfo_x()
         main_y = self.parent.winfo_y()
         main_width = self.parent.winfo_width()
@@ -356,7 +357,7 @@ class CustomPlayerCountDialog:
             bg="#121214",
             font=font.Font(family="Segoe UI", size=10)
         )
-        lbl_desc.pack(pady=(0, 15))
+        lbl_desc.pack(pady=(0, 10))
         
         entry_frame = tk.Frame(
             dialog, 
@@ -380,6 +381,86 @@ class CustomPlayerCountDialog:
         entry.insert(0, "4")
         entry.focus_set()
         entry.selection_range(0, tk.END)
+
+        mode_label = tk.Label(
+            dialog,
+            text="Choose player mode:",
+            fg="#8c8c9a",
+            bg="#121214",
+            font=font.Font(family="Segoe UI", size=10)
+        )
+        mode_label.pack(pady=(10, 6))
+
+        mode_frame = tk.Frame(dialog, bg="#121214")
+        mode_frame.pack(fill="x", padx=40)
+
+        mode_buttons = {}
+
+        def refresh_mode_buttons():
+            selected = mode_var.get()
+            for mode, button in mode_buttons.items():
+                active = mode == selected
+                color = "#55ff55" if mode == "solo" else "#00d2ff"
+                button.config(
+                    bg=color if active else "#212128",
+                    fg="#121214" if active else "#ffffff",
+                    highlightbackground=color if active else "#2d2d37",
+                )
+
+        def refresh_count_prompt():
+            if mode_var.get() == "duo":
+                lbl_desc.config(text="Enter number of duo teams (1 - 3):")
+                if entry.get().strip() == "4":
+                    entry.delete(0, tk.END)
+                    entry.insert(0, "2")
+            else:
+                lbl_desc.config(text="Enter maximum number of players (2 - 6):")
+                if entry.get().strip() == "2":
+                    entry.delete(0, tk.END)
+                    entry.insert(0, "4")
+            lbl_error.config(text="")
+            entry.selection_range(0, tk.END)
+            entry.focus_set()
+
+        def select_mode(mode):
+            mode_var.set(mode)
+            refresh_mode_buttons()
+            refresh_count_prompt()
+
+        mode_buttons["solo"] = tk.Button(
+            mode_frame,
+            text="SOLO\nAll actions",
+            command=lambda: select_mode("solo"),
+            bg="#55ff55",
+            fg="#121214",
+            activebackground="#55ff55",
+            activeforeground="#121214",
+            font=font.Font(family="Segoe UI", size=9, weight="bold"),
+            bd=0,
+            width=17,
+            height=2,
+            cursor="hand2",
+            highlightthickness=1,
+        )
+        mode_buttons["solo"].pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        mode_buttons["duo"] = tk.Button(
+            mode_frame,
+            text="DUO\nSplit roles",
+            command=lambda: select_mode("duo"),
+            bg="#212128",
+            fg="#ffffff",
+            activebackground="#00d2ff",
+            activeforeground="#121214",
+            font=font.Font(family="Segoe UI", size=9, weight="bold"),
+            bd=0,
+            width=17,
+            height=2,
+            cursor="hand2",
+            highlightthickness=1,
+        )
+        mode_buttons["duo"].pack(side="right", fill="x", expand=True, padx=(6, 0))
+        refresh_mode_buttons()
         
         lbl_error = tk.Label(dialog, text="", fg="#ff4d4d", bg="#121214", font=font.Font(family="Segoe UI", size=9))
         lbl_error.pack(pady=(2, 0))
@@ -395,11 +476,18 @@ class CustomPlayerCountDialog:
             val = entry.get().strip()
             try:
                 num = int(val)
-                if 2 <= num <= 6:
-                    result_var.set(str(num))
-                    dialog.destroy()
+                if mode_var.get() == "duo":
+                    if 1 <= num <= 3:
+                        result_var.set(str(num * 2))
+                        dialog.destroy()
+                    else:
+                        lbl_error.config(text="Please enter a number of teams between 1 and 3.")
                 else:
-                    lbl_error.config(text="Please enter a number between 2 and 6.")
+                    if 2 <= num <= 6:
+                        result_var.set(str(num))
+                        dialog.destroy()
+                    else:
+                        lbl_error.config(text="Please enter a number between 2 and 6.")
             except ValueError:
                 lbl_error.config(text="Please enter a valid integer.")
                 
@@ -441,7 +529,7 @@ class CustomPlayerCountDialog:
         
         self.parent.wait_window(dialog)
         val = result_var.get()
-        return int(val) if val else None
+        return (int(val), mode_var.get()) if val else None
 
 class CustomDifficultyDialog:
     """Two-step difficulty picker: select -> confirm (or go back)."""

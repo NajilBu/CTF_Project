@@ -25,6 +25,8 @@ ROLE_SOLO = "solo"
 ROLE_NEUTRAL = "neutral"
 ROLE_DECRYPT = "decrypt"
 ROLE_POWERUPS = "powerups"
+DUO_TEAM_COLORS = ("#00d2ff", "#ff4d4d", "#ffd24d")
+DUO_NEUTRAL_COLOR = "#8c8c9a"
 
 # Word pools for Caesar cipher clues
 _WORDS_EASY   = ["SECRET", "VAULT", "CIPHER", "MATRIX", "HACKER", "SHIELD", "SYSTEM", "KERNEL", "BINARY", "ROUTER", "CODING", "DECODE"]
@@ -394,6 +396,21 @@ class GridServer:
         second_team = self.players.get(second_id, {}).get("team")
         return first_team is not None and first_team == second_team
 
+    def duo_team_color(self, team_id):
+        try:
+            team_id = int(team_id)
+        except (TypeError, ValueError):
+            return DUO_NEUTRAL_COLOR
+        if team_id < 1:
+            return DUO_NEUTRAL_COLOR
+        return DUO_TEAM_COLORS[(team_id - 1) % len(DUO_TEAM_COLORS)]
+
+    def display_player_color(self, p_id):
+        player = self.players.get(p_id, {})
+        if self.game_mode == GAME_MODE_DUO:
+            return self.duo_team_color(player.get("team"))
+        return player.get("color", COLORS[(p_id - 1) % len(COLORS)])
+
     def can_start_game(self):
         if self.game_started or self.countdown_active:
             return False
@@ -570,7 +587,7 @@ class GridServer:
         player = self.players[p_id]
         return self._append_chat(
             "player", player.get("name", f"Player {p_id}"),
-            player.get("color", "#ffffff"), text,
+            self.display_player_color(p_id), text,
         )
 
     def send_host_chat(self, text):
@@ -654,7 +671,7 @@ class GridServer:
                 self.player_items[p_id].discard(pos)
                 self.host_discovered_items.discard(pos)
                 del self.player_item_keys[p_id][pos]
-                self.player_collected[p_id][pos] = self.players[p_id]["color"]
+                self.player_collected[p_id][pos] = self.display_player_color(p_id)
                 play_sound("collect")
                 # Record finish order when all required items are collected.
                 if len(self.player_collected[p_id]) >= self.items_per_player and p_id not in self.finished_players:
@@ -826,7 +843,10 @@ class GridServer:
             per_player[str(p_id)] = player_state
         return {
             "type": "state",
-            "players": {str(k): v for k, v in self.players.items()},
+            "players": {
+                str(k): {**v, "profile_color": v.get("color"), "color": self.display_player_color(k)}
+                for k, v in self.players.items()
+            },
             "game_started": self.game_started,
             "per_player": per_player,
             "map_powerups": [

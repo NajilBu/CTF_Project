@@ -5,7 +5,7 @@ from config import COLORS
 from gui.app import GridGameApp
 from gui.dialogs import LockScreenDialog
 from network.server import (GridServer, expected_caesar_answer as expected_server_answer,
-                            GAME_MODE_DUO, GAME_MODE_SOLO, ROLE_DECRYPT,
+                            DUO_TEAM_COLORS, GAME_MODE_DUO, GAME_MODE_SOLO, ROLE_DECRYPT,
                             ROLE_NEUTRAL, ROLE_POWERUPS, make_caesar_clue)
 
 
@@ -208,6 +208,20 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         self.assertTrue(server.can_start_game())
 
+    def test_duo_mode_uses_team_color_instead_of_personal_color(self):
+        server = self.make_server()
+        server.game_mode = GAME_MODE_DUO
+        server.players[1]["color"] = "#123456"
+        server.players[1]["team"] = 1
+        server.assign_duo_roles()
+
+        state = server._build_state(1)
+
+        self.assertEqual(state["players"]["1"]["color"], DUO_TEAM_COLORS[0])
+        self.assertEqual(state["players"]["1"]["profile_color"], "#123456")
+        server.process_client_chat(1, "team color")
+        self.assertEqual(server.chat_history[-1]["color"], DUO_TEAM_COLORS[0])
+
     @patch("network.server.play_sound", lambda *_: None)
     def test_duo_roles_restrict_decrypt_and_powerup_actions(self):
         server = self.make_server()
@@ -228,6 +242,7 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         server.process_client_unlock(1, item_pos[0], item_pos[1], "SECRET")
         self.assertEqual(server.player_items[1], set())
+        self.assertEqual(server.player_collected[1][item_pos], DUO_TEAM_COLORS[0])
         self.assertIn(1, server.finished_players)
         self.assertIn(2, server.finished_players)
 

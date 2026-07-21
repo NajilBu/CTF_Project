@@ -257,6 +257,17 @@ class MultiplayerRulesTest(unittest.TestCase):
         server.process_client_chat(1, "team color")
         self.assertEqual(server.chat_history[-1]["color"], DUO_TEAM_COLORS[0])
 
+    def test_duo_teammates_share_discovered_cells(self):
+        server = self.make_server()
+        server.game_mode = GAME_MODE_DUO
+        server.players[1]["team"] = 1
+        server.players[2]["team"] = 1
+
+        server.process_client_move(1, 1, 0)
+
+        self.assertIn((1, 0), server.player_visited[1])
+        self.assertIn((1, 0), server.player_visited[2])
+
     def test_duo_decryptor_can_change_team_color(self):
         server = self.make_server()
         sent = []
@@ -273,11 +284,13 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         self.assertTrue(sent[-1][1]["success"])
         self.assertEqual(server.team_colors[1], "#123456")
+        self.assertEqual(server.team_names[1], "Alice")
         self.assertEqual(server.players[1]["name"], "Decryptor")
         self.assertEqual(server.players[1]["color"], "#00d2ff")
         self.assertFalse(server.chat_history)
         state = server._build_state(1)
         self.assertEqual(state["team_colors"]["1"], "#123456")
+        self.assertEqual(state["team_names"]["1"], "Alice")
         self.assertEqual(state["players"]["1"]["color"], "#123456")
         self.assertEqual(state["players"]["2"]["color"], "#123456")
         server.process_client_chat(2, "team color")
@@ -455,6 +468,35 @@ class MultiplayerRulesTest(unittest.TestCase):
         app.on_server_game_update()
 
         self.assertEqual(shown, [True])
+
+    def test_duo_finish_results_include_team_and_player_names(self):
+        app = GridGameApp.__new__(GridGameApp)
+        app.is_host = False
+        app.game_mode = GAME_MODE_DUO
+        app.difficulty = "easy"
+        app.items_per_player = 1
+        app.players = {
+            1: {"name": "Alice", "team": 1, "role": ROLE_DECRYPT, "moves": 3},
+            2: {"name": "Bob", "team": 1, "role": ROLE_POWERUPS, "moves": 2},
+        }
+        app.per_player_data = {
+            1: {"items": set(), "collected": {(1, 1): "#00d2ff"}},
+            2: {"items": set(), "collected": {}},
+        }
+        app.client = type("Client", (), {
+            "game_mode": GAME_MODE_DUO,
+            "finished_players": [1, 2],
+            "finish_times": {1: 10.0, 2: 10.0},
+            "finish_target": 1,
+        })()
+
+        winners, _ = app._build_finish_results()
+
+        self.assertEqual(winners[0]["name"], "Team 1")
+        self.assertEqual(
+            [app.players[p_id]["name"] for p_id in winners[0]["members"]],
+            ["Alice", "Bob"],
+        )
 
     def test_chat_rejects_blank_messages_and_bounds_history(self):
         server = self.make_server()

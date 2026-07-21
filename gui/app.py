@@ -38,8 +38,8 @@ ROLE_POWERUPS = "powerups"
 ROLE_LABELS = {
     ROLE_SOLO: "SOLO",
     ROLE_NEUTRAL: "NEUTRAL",
-    ROLE_DECRYPT: "DECRYPT",
-    ROLE_POWERUPS: "POWERUPS",
+    ROLE_DECRYPT: "DECRYTOR",
+    ROLE_POWERUPS: "SABOTAGEE",
 }
 DUO_TEAM_COLORS = ("#00d2ff", "#ff4d4d", "#ffd24d")
 DUO_NEUTRAL_COLOR = "#8c8c9a"
@@ -542,7 +542,7 @@ class GridGameApp:
 
             team_header = tk.Frame(card, bg="#1a1a24")
             team_header.pack(fill="x", padx=10, pady=(8, 2))
-            team_title = tk.Label(team_header, text=f"TEAM {team_id}", fg=color, bg="#1a1a24",
+            team_title = tk.Label(team_header, text=self.duo_team_name(team_id).upper(), fg=color, bg="#1a1a24",
                                   font=("Segoe UI", 11, "bold"))
             team_title.pack(side="left")
             self.team_title_labels[team_id] = team_title
@@ -561,7 +561,7 @@ class GridGameApp:
 
             role_row = tk.Frame(card, bg="#1a1a24")
             role_row.pack(fill="both", expand=True, padx=10, pady=(8, 12))
-            for role, label_text in ((ROLE_DECRYPT, "DECRYPT"), (ROLE_POWERUPS, "POWERUPS")):
+            for role, label_text in ((ROLE_DECRYPT, "DECRYTOR"), (ROLE_POWERUPS, "SABOTAGEE")):
                 role_box = tk.Frame(
                     role_row, bg="#212128", bd=1, relief="solid",
                     highlightthickness=1, highlightbackground="#313143",
@@ -794,6 +794,15 @@ class GridGameApp:
             return self.duo_team_color(player.get("team"))
         return player.get("color", COLORS[(p_id - 1) % len(COLORS)])
 
+    def duo_team_name(self, team_id):
+        source = self
+        if getattr(self, "is_host", False) and getattr(self, "server", None):
+            source = self.server
+        elif getattr(self, "is_client", False) and getattr(self, "client", None):
+            source = self.client
+        names = getattr(source, "team_names", {})
+        return names.get(team_id) or names.get(str(team_id)) or f"Team {team_id}"
+
     def my_role(self):
         players = getattr(self, "players", {})
         if getattr(self, "my_player_id", None) in players:
@@ -832,7 +841,8 @@ class GridGameApp:
         for team_id in range(1, self.duo_team_count() + 1):
             team_color = self.duo_team_color(team_id)
             if team_id in getattr(self, "team_title_labels", {}):
-                self.team_title_labels[team_id].config(fg=team_color)
+                self.team_title_labels[team_id].config(
+                    text=self.duo_team_name(team_id).upper(), fg=team_color)
             if team_id in getattr(self, "team_color_swatches", {}):
                 self.team_color_swatches[team_id].config(bg=team_color)
             if team_id in getattr(self, "team_color_value_labels", {}):
@@ -997,7 +1007,7 @@ class GridGameApp:
                     self.btn_ready.config(text="READY", bg="#55ff55", fg="#121214")
             role_suffix = ""
             if mode == GAME_MODE_DUO:
-                team_text = f"TEAM {mine.get('team')}" if mine.get("team") else "NEUTRAL"
+                team_text = self.duo_team_name(mine.get("team")) if mine.get("team") else "NEUTRAL"
                 role_suffix = f" - {team_text} / {self.role_label(mine)}"
                 if hasattr(self, "lbl_status_desc"):
                     self.lbl_status_desc.config(text="Pick a duo team, then ready up.")
@@ -1187,7 +1197,8 @@ class GridGameApp:
 
         self.focused_slot = None
         self.spectator_cards = {}
-        max_p = getattr(self, "max_players", 6)
+        max_p = (self.duo_team_count() if self.current_game_mode() == GAME_MODE_DUO
+                 else getattr(self, "max_players", 6))
         default_split_size = 17 if max_p > 5 else 22
         split_size = default_split_size
         split_w = 20 * split_size
@@ -1309,20 +1320,35 @@ class GridGameApp:
         for widget in self.leaderboard_rows_frame.winfo_children():
             widget.destroy()
 
-        # Gather player data
+        # Gather player or shared duo-team data.
         scores = []
-        for p_id, p_info in self.players.items():
-            p_data = self.per_player_data.get(p_id, {})
-            collected = p_data.get("collected", {})
-            items_count = len(collected)
-            moves_count = p_info.get("moves", 0)
-            scores.append({
-                "id": p_id,
-                "name": p_info.get("name", f"Player {p_id}"),
-                "color": self.display_player_color(p_id, p_info),
-                "moves": moves_count,
-                "items": items_count
-            })
+        if self.current_game_mode() == GAME_MODE_DUO:
+            for team_id in range(1, self.duo_team_count() + 1):
+                members = [p_id for p_id, info in self.players.items()
+                           if info.get("team") == team_id]
+                if not members:
+                    continue
+                collected = set().union(*(
+                    set(self.per_player_data.get(p_id, {}).get("collected", {}))
+                    for p_id in members
+                ))
+                names = " / ".join(self.players[p_id].get("name", f"P{p_id}") for p_id in members)
+                scores.append({
+                    "id": tuple(members), "name": f"{self.duo_team_name(team_id)}: {names}",
+                    "color": self.duo_team_color(team_id),
+                    "moves": sum(self.players[p_id].get("moves", 0) for p_id in members),
+                    "items": len(collected),
+                })
+        else:
+            for p_id, p_info in self.players.items():
+                p_data = self.per_player_data.get(p_id, {})
+                scores.append({
+                    "id": p_id,
+                    "name": p_info.get("name", f"Player {p_id}"),
+                    "color": self.display_player_color(p_id, p_info),
+                    "moves": p_info.get("moves", 0),
+                    "items": len(p_data.get("collected", {})),
+                })
 
         # Finished players lock their rank by completion order;
         # unfinished players sort below them by items desc, moves asc.
@@ -1333,8 +1359,11 @@ class GridGameApp:
 
         def sort_key(item):
             p_id = item["id"]
-            if p_id in finished_list:
-                return (0, finished_list.index(p_id), 0)
+            member_ids = p_id if isinstance(p_id, tuple) else (p_id,)
+            finish_indexes = [finished_list.index(member) for member in member_ids
+                              if member in finished_list]
+            if finish_indexes:
+                return (0, min(finish_indexes), 0)
             return (1, -item["items"], item["moves"])
 
         scores.sort(key=sort_key)
@@ -1345,7 +1374,8 @@ class GridGameApp:
             p_color = item["color"]
             moves = item["moves"]
             items_found = item["items"]
-            is_finished = p_id in finished_list
+            member_ids = p_id if isinstance(p_id, tuple) else (p_id,)
+            is_finished = any(member in finished_list for member in member_ids)
 
             row_frame = tk.Frame(self.leaderboard_rows_frame,
                                  bg="#1e1e2e" if is_finished else "#1a1a24", pady=5)
@@ -1565,16 +1595,18 @@ class GridGameApp:
         allow_color = mode == GAME_MODE_SOLO or is_duo_decryptor
         if is_duo_decryptor:
             team_id = player.get("team")
+            profile_name = self.duo_team_name(team_id)
             profile_color = self.duo_team_color(team_id)
             unavailable_colors = {
                 self.duo_team_color(other_team).lower()
                 for other_team in range(1, self.duo_team_count() + 1)
                 if other_team != team_id
             }
-            title = "DUO TEAM COLOR"
+            title = "DUO TEAM SETTINGS"
             color_label = "TEAM COLOR"
             save_label = "SAVE TEAM"
-            allow_name = False
+            allow_name = True
+            name_label = "TEAM NAME"
         elif mode == GAME_MODE_DUO and player.get("team") is None:
             profile_color = player.get(
                 "profile_color",
@@ -1585,6 +1617,7 @@ class GridGameApp:
             color_label = "PLAYER COLOR"
             save_label = "SAVE NAME"
             allow_name = True
+            name_label = "DISPLAY NAME"
         else:
             profile_color = player.get(
                 "profile_color",
@@ -1599,9 +1632,10 @@ class GridGameApp:
             color_label = "PLAYER COLOR"
             save_label = "SAVE PROFILE"
             allow_name = True
+            name_label = "DISPLAY NAME"
         result = PlayerProfileDialog(
             self.root, self.button_font,
-            player.get("name", f"Player {self.my_player_id}"),
+            profile_name if is_duo_decryptor else player.get("name", f"Player {self.my_player_id}"),
             profile_color,
             COLORS,
             unavailable_colors=unavailable_colors,
@@ -1610,10 +1644,11 @@ class GridGameApp:
             save_label=save_label,
             allow_color=allow_color,
             allow_name=allow_name,
+            name_label=name_label,
         ).show()
         if result:
-            self.preferred_name = result[0]
             if not is_duo_decryptor:
+                self.preferred_name = result[0]
                 self.preferred_color = result[1]
             self.profile_customized = True
             self.client.send_profile(*result)
@@ -1887,7 +1922,7 @@ class GridGameApp:
                 if not members:
                     continue
                 color = self.duo_team_color(team_id)
-                groups.append((f"Team {team_id}", members, color))
+                groups.append((self.duo_team_name(team_id), members, color))
             return groups
         if self.difficulty == "medium" and len(player_ids) >= 6:
             return [
@@ -1977,7 +2012,11 @@ class GridGameApp:
         self._draw_place_badge(frame, row["rank"], 94 if big else 72)
         tk.Label(frame, text=row["name"].upper(), fg="#eafaff", bg="#111d29",
                  font=("Segoe UI", 14 if big else 12, "bold")).pack(pady=(0, 2))
-        tk.Label(frame, text=" / ".join(f"P{p_id}" for p_id in row["members"]),
+        member_names = " / ".join(
+            f"{self.players.get(p_id, {}).get('name', f'Player {p_id}')} (P{p_id})"
+            for p_id in row["members"]
+        )
+        tk.Label(frame, text=member_names,
                  fg=row["color"], bg="#111d29", font=("Consolas", 10, "bold")).pack()
         tk.Label(frame, text=f"{row['keys']}/{row['goal']} KEYS", fg="#55ff55",
                  bg="#111d29", font=("Segoe UI", 11, "bold")).pack(pady=(8, 2))
@@ -1993,9 +2032,13 @@ class GridGameApp:
                  font=("Segoe UI", 10, "bold"), width=5).pack(side="left", padx=(10, 4))
         tk.Label(frame, text=row["name"], fg="#eafaff", bg="#0d141e",
                  font=("Segoe UI", 10, "bold"), width=18, anchor="w").pack(side="left")
-        tk.Label(frame, text=" / ".join(f"P{p_id}" for p_id in row["members"]),
+        member_names = " / ".join(
+            f"{self.players.get(p_id, {}).get('name', f'Player {p_id}')} (P{p_id})"
+            for p_id in row["members"]
+        )
+        tk.Label(frame, text=member_names,
                  fg=row["color"], bg="#0d141e", font=("Consolas", 9, "bold"),
-                 width=16, anchor="w").pack(side="left")
+                 width=30, anchor="w").pack(side="left")
         tk.Label(frame, text=f"{row['keys']}/{row['goal']} KEYS",
                  fg="#ffd24d" if row["keys"] else "#8c8c9a", bg="#0d141e",
                  font=("Segoe UI", 9, "bold"), width=12, anchor="e").pack(side="right", padx=(4, 12))
@@ -2158,7 +2201,7 @@ class GridGameApp:
                 )
             else:
                 self.btn_lock.config(
-                    bg="#313143", fg="#8c8c9a", text="\U0001f512 DECRYPTOR ONLY",
+                    bg="#313143", fg="#8c8c9a", text="\U0001f512 DECRYTOR ONLY",
                     state="disabled"
                 )
 
@@ -2190,7 +2233,7 @@ class GridGameApp:
         if not self.my_can_use_powerups():
             for sf, lbl in zip(self.powerup_slot_frames, self.powerup_slot_labels):
                 sf.config(highlightbackground="#313143")
-                lbl.config(text="POWERUPS ONLY", fg="#5f5f6e")
+                lbl.config(text="SABOTAGEE ONLY", fg="#5f5f6e")
             return
 
         slots = [None, None, None]
@@ -2443,7 +2486,8 @@ class GridGameApp:
             return
 
         if hasattr(self, 'is_host') and self.is_host:
-            max_p = getattr(self, "max_players", 6)
+            duo_mode = self.current_game_mode() == GAME_MODE_DUO
+            max_p = self.duo_team_count() if duo_mode else getattr(self, "max_players", 6)
             focused = getattr(self, "focused_slot", None)
             host_items = self.host_visible_items()
             
@@ -2455,7 +2499,12 @@ class GridGameApp:
                 lbl_title = card["title_label"]
                 lbl_stats = card["stats_label"]
 
-                p_id = slot_id
+                if duo_mode:
+                    p_ids = [p_id for p_id, info in self.players.items()
+                             if info.get("team") == slot_id]
+                else:
+                    p_ids = [slot_id] if slot_id in self.players else []
+                p_id = p_ids[0] if p_ids else slot_id
                 p_info = self.players.get(p_id)
                 p_data = self.per_player_data.get(p_id, {})
 
@@ -2493,11 +2542,23 @@ class GridGameApp:
                         y = i * split_size
                         canvas.create_line(0, y, 20 * split_size, y, fill="#23232c", width=1)
 
-                    visited = p_data.get("visited", set())
-                    items = p_data.get("items", set())
-                    collected = p_data.get("collected", {})
+                    visited = set().union(*(
+                        self.per_player_data.get(member_id, {}).get("visited", set())
+                        for member_id in p_ids
+                    ))
+                    items = set().union(*(
+                        self.per_player_data.get(member_id, {}).get("items", set())
+                        for member_id in p_ids
+                    ))
+                    collected = {}
+                    for member_id in p_ids:
+                        collected.update(self.per_player_data.get(member_id, {}).get("collected", {}))
                     p_color = self.display_player_color(p_id, p_info)
-                    player_name = p_info.get("name", f"Player {p_id}")
+                    player_names = " / ".join(
+                        self.players[member_id].get("name", f"P{member_id}")
+                        for member_id in p_ids
+                    )
+                    player_name = f"{self.duo_team_name(slot_id).upper()}: {player_names}" if duo_mode else player_names
 
                     # Determine text and token sizes based on split_size
                     if split_size == 36:
@@ -2602,27 +2663,24 @@ class GridGameApp:
                             pcx, pcy, text=marker_text, fill=marker_color, font=flag_font
                         )
 
-                    pr, pc = p_info["r"], p_info["c"]
-                    px1 = pc * split_size + p_margin
-                    py1 = pr * split_size + p_margin
-                    px2 = (pc + 1) * split_size - p_margin
-                    py2 = (pr + 1) * split_size - p_margin
+                    for marker_index, member_id in enumerate(p_ids):
+                        member = self.players[member_id]
+                        pr, pc = member["r"], member["c"]
+                        inset = p_margin + marker_index * max(1, split_size // 5)
+                        px1 = pc * split_size + inset
+                        py1 = pr * split_size + inset
+                        px2 = (pc + 1) * split_size - inset
+                        py2 = (pr + 1) * split_size - inset
+                        canvas.create_oval(px1 - 1, py1 - 1, px2 + 1, py2 + 1,
+                                           fill="", outline=p_color, width=ring_w)
+                        canvas.create_oval(px1, py1, px2, py2, fill=p_color, outline="")
+                        canvas.create_text((px1 + px2) // 2, (py1 + py2) // 2,
+                                           text=f"P{member_id}", fill="#121214",
+                                           font=("Segoe UI", max(5, split_size // 4), "bold"))
 
-                    canvas.create_oval(
-                        px1 - 1, py1 - 1, px2 + 1, py2 + 1,
-                        fill="", outline=p_color, width=ring_w
-                    )
-                    canvas.create_oval(
-                        px1, py1, px2, py2,
-                        fill=p_color, outline=""
-                    )
-                    canvas.create_oval(
-                        px1 + flare_offset, py1 + flare_offset, px2 - flare_offset, py2 - flare_offset,
-                        fill="#ffffff", outline=""
-                    )
-
-                    lbl_title.config(text=player_name + " (P" + str(p_id) + ")", fg=p_color)
-                    moves = p_info.get("moves", 0)
+                    player_ids = " / ".join(f"P{member_id}" for member_id in p_ids)
+                    lbl_title.config(text=f"{player_name} ({player_ids})", fg=p_color)
+                    moves = sum(self.players[member_id].get("moves", 0) for member_id in p_ids)
                     items_found = len(collected)
                     lbl_stats.config(
                         text="Moves: " + str(moves) + " | Items: "

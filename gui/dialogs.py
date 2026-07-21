@@ -9,7 +9,7 @@ class PlayerProfileDialog:
     def __init__(self, parent, button_font, name, color, preset_colors,
                  unavailable_colors=None, title="PLAYER PROFILE",
                  color_label="PLAYER COLOR", save_label="SAVE PROFILE",
-                 allow_color=True, allow_name=True):
+                 allow_color=True, allow_name=True, name_label="DISPLAY NAME"):
         self.parent = parent
         self.button_font = button_font
         self.name = name
@@ -23,6 +23,7 @@ class PlayerProfileDialog:
         self.save_label = save_label
         self.allow_color = allow_color
         self.allow_name = allow_name
+        self.name_label = name_label
 
     def show(self):
         result = {"value": None}
@@ -43,7 +44,7 @@ class PlayerProfileDialog:
                  font=font.Font(family="Segoe UI", size=16, weight="bold")).pack(pady=(22, 16))
         entry = None
         if self.allow_name:
-            tk.Label(dialog, text="DISPLAY NAME", fg="#8c8c9a", bg="#121214",
+            tk.Label(dialog, text=self.name_label, fg="#8c8c9a", bg="#121214",
                      font=font.Font(family="Segoe UI", size=9, weight="bold")).pack()
             entry = tk.Entry(dialog, bg="#1a1a24", fg="#ffffff", insertbackground="#ffffff",
                              justify="center", bd=0,

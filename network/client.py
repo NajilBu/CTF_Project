@@ -36,6 +36,7 @@ class GridClient:
         self.items_per_player = 3
         self.game_mode        = "solo"
         self.team_colors      = {}
+        self.team_names       = {}
 
     # ------------------------------------------------------------------
     def get_my_visited(self):
@@ -148,6 +149,10 @@ class GridClient:
                         self.team_colors       = {
                             int(team_id): color
                             for team_id, color in msg.get("team_colors", {}).items()
+                        }
+                        self.team_names        = {
+                            int(team_id): name
+                            for team_id, name in msg.get("team_names", {}).items()
                         }
 
                         if self.on_state_update:
@@ -262,3 +267,4 @@ class GridClient:
         self.move_item_targets.clear()
         self.chat_history.clear()
         self.team_colors.clear()
+        self.team_names.clear()

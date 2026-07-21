@@ -102,6 +102,7 @@ class GridServer:
         self.items_per_player      = 3
         self.game_mode             = GAME_MODE_SOLO
         self.team_colors           = {}
+        self.team_names            = {}
         self.cell_close_timer_active = False
         self.discovery = LobbyDiscoveryResponder(self._discovery_state)
 
@@ -445,6 +446,26 @@ class GridServer:
         second_team = self.players.get(second_id, {}).get("team")
         return first_team is not None and first_team == second_team
 
+    def mark_visited(self, p_id, position):
+        """Share newly explored cells with every member of a duo team."""
+        member_ids = [p_id]
+        if self.game_mode == GAME_MODE_DUO:
+            team_id = self.players.get(p_id, {}).get("team")
+            if team_id is not None:
+                member_ids = self._duo_team_members(team_id)
+        for member_id in member_ids:
+            self.player_visited.setdefault(member_id, set()).add(position)
+
+    def synchronize_duo_visited(self):
+        if self.game_mode != GAME_MODE_DUO:
+            return
+        for team_id in range(1, self.duo_team_count() + 1):
+            members = self._duo_team_members(team_id)
+            shared = (set().union(*(self.player_visited.get(p_id, set()) for p_id in members))
+                      if members else set())
+            for p_id in members:
+                self.player_visited[p_id] = set(shared)
+
     def duo_team_color(self, team_id):
         try:
             team_id = int(team_id)
@@ -605,7 +626,12 @@ class GridServer:
         with self._color_lock:
             old_name = self.players[p_id].get("name", f"Player {p_id}")
             if is_duo_decryptor:
-                clean_name = old_name
+                if not clean_name:
+                    self._send_to(p_id, {
+                        "type": "profile_result", "success": False,
+                        "reason": "Team name cannot be blank.",
+                    })
+                    return
             team_id = self.players[p_id].get("team")
 
             if is_duo_decryptor:
@@ -633,10 +659,12 @@ class GridServer:
                 })
                 return
 
-            self.players[p_id]["name"] = clean_name
             if is_duo_decryptor:
                 self.team_colors[team_id] = clean_color
+                self.team_names[team_id] = clean_name
+                clean_name = old_name
             else:
+                self.players[p_id]["name"] = clean_name
                 self.players[p_id]["color"] = clean_color
         self._send_to(p_id, {"type": "profile_result", "success": True})
         if self.game_started:
@@ -709,7 +737,7 @@ class GridServer:
         self.players[p_id]["r"] = new_r
         self.players[p_id]["c"] = new_c
         self.players[p_id]["moves"] = self.players[p_id].get("moves", 0) + 1
-        self.player_visited[p_id].add((new_r, new_c))
+        self.mark_visited(p_id, (new_r, new_c))
 
         # Auto-collect powerup if player steps on one
         if (new_r, new_c) in self.powerups and self.can_player_use_powerups(p_id):
@@ -821,7 +849,7 @@ class GridServer:
             if undiscovered:
                 # Pick the first undiscovered item
                 next_item = undiscovered[0]
-                self.player_visited[reveal_owner].add(next_item)
+                self.mark_visited(reveal_owner, next_item)
                 self.host_discovered_items.add(next_item)
                 slots[slot] = None
                 play_sound("qte_success")
@@ -897,7 +925,7 @@ class GridServer:
             if new_pos:
                 self.players[target_id]["r"] = new_pos[0]
                 self.players[target_id]["c"] = new_pos[1]
-                self.player_visited[target_id].add(new_pos)
+                self.mark_visited(target_id, new_pos)
                 slots[slot] = None
                 play_sound("reset")
                 if self.on_game_update:
@@ -957,6 +985,10 @@ class GridServer:
                 str(team_id): self.duo_team_color(team_id)
                 for team_id in range(1, self.duo_team_count() + 1)
             },
+            "team_names": {
+                str(team_id): self.team_names.get(team_id, f"Team {team_id}")
+                for team_id in range(1, self.duo_team_count() + 1)
+            },
             "countdown": self.countdown,
             "chat_history": list(self.chat_history),
         }
@@ -984,6 +1016,7 @@ class GridServer:
         self.difficulty        = difficulty
         self.items_per_player  = 4 if difficulty == "hard" else 3
         self.assign_duo_roles()
+        self.synchronize_duo_visited()
         self.game_started      = True
         self.finished_players  = []
         self.finish_times      = {}
@@ -1035,6 +1068,7 @@ class GridServer:
             self.player_item_keys[p_id] = {}
             self.player_powerups[p_id]  = [None, None, None]
         self.assign_duo_roles()
+        self.synchronize_duo_visited()
         self.finished_players = []
         self.finish_times = {}
         self.round_start_time = time.time()
@@ -1116,4 +1150,5 @@ class GridServer:
         self.player_collected.clear()
         self.host_discovered_items.clear()
         self.team_colors.clear()
+        self.team_names.clear()
         self.chat_history.clear()

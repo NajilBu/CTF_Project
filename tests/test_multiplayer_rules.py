@@ -441,6 +441,21 @@ class MultiplayerRulesTest(unittest.TestCase):
 
         self.assertEqual(updates, ["lobby"])
 
+    def test_host_opens_final_leaderboard_when_match_finishes(self):
+        app = GridGameApp.__new__(GridGameApp)
+        app.server = self.make_server()
+        app.server.match_finished = True
+        app.in_active_game = True
+        app.showing_finish_screen = False
+        app.players = {}
+        app.per_player_data = {}
+        shown = []
+        app.show_game_finished_screen = lambda complete: shown.append(complete)
+
+        app.on_server_game_update()
+
+        self.assertEqual(shown, [True])
+
     def test_chat_rejects_blank_messages_and_bounds_history(self):
         server = self.make_server()
         server.game_started = False

@@ -1032,6 +1032,10 @@ class GridGameApp:
                     "items":     self.server.player_items.get(p_id, set()),
                     "collected": self.server.player_collected.get(p_id, {})
                 }
+            if self.server.match_finished:
+                if not self.showing_finish_screen:
+                    self.show_game_finished_screen(True)
+                return
             self.update_host_ui_stats()
             self.draw_elements()
             self.update_ingame_chat()
@@ -1899,8 +1903,9 @@ class GridGameApp:
         return []
 
     def _build_finish_results(self):
-        finished = list(getattr(self.client, "finished_players", []))
-        finish_times = getattr(self.client, "finish_times", {})
+        match = self.server if self.is_host else self.client
+        finished = list(getattr(match, "finished_players", []))
+        finish_times = getattr(match, "finish_times", {})
 
         groups = self._display_groups_for_results()
         if groups and (self.current_game_mode() == GAME_MODE_DUO or self.difficulty in ("medium", "hard")):
@@ -1928,7 +1933,7 @@ class GridGameApp:
                 })
             rows.sort(key=lambda row: row["sort"])
             if self.current_game_mode() == GAME_MODE_DUO:
-                winner_limit = getattr(self.client, "finish_target", 1)
+                winner_limit = getattr(match, "finish_target", 1)
             else:
                 winner_limit = 2 if self.difficulty == "medium" else 1
             for index, row in enumerate(rows, 1):
@@ -1953,8 +1958,8 @@ class GridGameApp:
         rows.sort(key=lambda row: row["sort"])
         for index, row in enumerate(rows, 1):
             row["rank"] = index
-            row["winner"] = index <= self.client.finish_target
-        return rows[:self.client.finish_target], rows[self.client.finish_target:]
+            row["winner"] = index <= match.finish_target
+        return rows[:match.finish_target], rows[match.finish_target:]
 
     def _draw_place_badge(self, parent, rank, size):
         color = self._rank_color(rank)
@@ -2010,7 +2015,8 @@ class GridGameApp:
         self.clear_screen()
 
         winners, participants = self._build_finish_results()
-        finished = self.my_player_id in self.client.finished_players
+        finished = (not self.is_host
+                    and self.my_player_id in self.client.finished_players)
 
         self.current_frame = tk.Frame(self.root, bg="#090d14")
         self.current_frame.pack(fill="both", expand=True)
@@ -2056,7 +2062,12 @@ class GridGameApp:
         for row in participants:
             self._build_finish_participant_row(list_body, row)
 
-        if finished:
+        if self.is_host:
+            btn_text = "RETURN TO MAIN MENU"
+            btn_command = self.show_title_screen
+            btn_bg = "#00d2ff"
+            btn_fg = "#121214"
+        elif finished:
             btn_text = "RETURN TO LOBBY"
             btn_command = self.show_postgame_lobby
             btn_bg = "#00d2ff"
